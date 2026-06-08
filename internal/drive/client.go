@@ -20,6 +20,15 @@ const FolderMIME = "application/vnd.google-apps.folder"
 const DefaultMetadataCacheTTL = 5 * time.Minute
 const DefaultListCacheTTL = 30 * time.Second
 
+var mediaRequestHeaders = []string{
+	"Range",
+	"If-Match",
+	"If-None-Match",
+	"If-Modified-Since",
+	"If-Unmodified-Since",
+	"If-Range",
+}
+
 var ErrNotFound = errors.New("not found")
 
 type AmbiguousPathError struct {
@@ -354,6 +363,14 @@ func (c *Client) Download(ctx context.Context, method string, id string, rangeHe
 }
 
 func (c *Client) DownloadWithResourceKey(ctx context.Context, method string, id string, rangeHeader string, resourceKey string) (*http.Response, error) {
+	headers := http.Header{}
+	if rangeHeader != "" {
+		headers.Set("Range", rangeHeader)
+	}
+	return c.DownloadWithResourceKeyAndHeaders(ctx, method, id, headers, resourceKey)
+}
+
+func (c *Client) DownloadWithResourceKeyAndHeaders(ctx context.Context, method string, id string, headers http.Header, resourceKey string) (*http.Response, error) {
 	if id == "" {
 		return nil, errors.New("file ID is required")
 	}
@@ -366,9 +383,7 @@ func (c *Client) DownloadWithResourceKey(ctx context.Context, method string, id 
 	if err != nil {
 		return nil, err
 	}
-	if rangeHeader != "" {
-		req.Header.Set("Range", rangeHeader)
-	}
+	copySelectedHeaders(req.Header, headers, mediaRequestHeaders...)
 	setResourceKeyHeader(req, id, resourceKey)
 	return c.do(req)
 }
@@ -791,6 +806,17 @@ func cloneRequest(req *http.Request) *http.Request {
 	cloned := req.Clone(req.Context())
 	cloned.Header = req.Header.Clone()
 	return cloned
+}
+
+func copySelectedHeaders(dst http.Header, src http.Header, keys ...string) {
+	for _, key := range keys {
+		if value := src.Values(key); len(value) > 0 {
+			dst.Del(key)
+			for _, v := range value {
+				dst.Add(key, v)
+			}
+		}
+	}
 }
 
 func setResourceKeyHeader(req *http.Request, id string, resourceKey string) {

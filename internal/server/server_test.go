@@ -507,6 +507,44 @@ func TestFileEndpointStreamsMediaInOneDriveRequest(t *testing.T) {
 	}
 }
 
+func TestFileEndpointForwardsConditionalHeaders(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if req.URL.Query().Get("alt") != "media" {
+			t.Fatalf("alt = %q", req.URL.Query().Get("alt"))
+		}
+		if req.Header.Get("If-None-Match") != `"etag-1"` {
+			t.Fatalf("If-None-Match = %q", req.Header.Get("If-None-Match"))
+		}
+		if req.Header.Get("If-Range") != `"range-etag"` {
+			t.Fatalf("If-Range = %q", req.Header.Get("If-Range"))
+		}
+		if req.Header.Get("Cookie") != "" {
+			t.Fatalf("Cookie should not be forwarded: %q", req.Header.Get("Cookie"))
+		}
+		resp := textResponse(http.StatusNotModified, "")
+		resp.Header.Set("ETag", `"etag-1"`)
+		return resp, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/file/file-1/video.mp4", nil)
+	req.Header.Set("If-None-Match", `"etag-1"`)
+	req.Header.Set("If-Range", `"range-etag"`)
+	req.Header.Set("Cookie", "local=only")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if rec.Header().Get("ETag") != `"etag-1"` {
+		t.Fatalf("ETag = %q", rec.Header().Get("ETag"))
+	}
+}
+
 func TestFileEndpointForwardsResourceKey(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {

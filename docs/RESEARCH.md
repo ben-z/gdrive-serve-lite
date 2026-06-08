@@ -73,6 +73,8 @@ GET https://www.googleapis.com/drive/v3/files/{fileId}?alt=media
 
 The Drive download guide documents partial downloads via the HTTP `Range` header. That is essential for video playback and seeking.
 
+The media endpoint also forwards standard HTTP validator headers (`If-None-Match`, `If-Modified-Since`, `If-Match`, `If-Unmodified-Since`, and `If-Range`) to Drive. This keeps browser cache validation and range revalidation as one upstream Drive request while avoiding broad forwarding of unrelated local request headers.
+
 Google Workspace document export is separate:
 
 ```text
