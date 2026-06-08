@@ -1,0 +1,342 @@
+package drive
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"gdrive-serve-lite/internal/config"
+)
+
+const FolderMIME = "application/vnd.google-apps.folder"
+
+var ErrNotFound = errors.New("not found")
+
+type AmbiguousPathError struct {
+	Segment string
+	Parent  string
+	Count   int
+}
+
+func (e *AmbiguousPathError) Error() string {
+	return fmt.Sprintf("path segment %q is ambiguous under parent %q (%d matches)", e.Segment, e.Parent, e.Count)
+}
+
+type Client struct {
+	cfg        config.Config
+	token      config.OAuthToken
+	httpClient *http.Client
+	mu         sync.Mutex
+}
+
+type File struct {
+	ID              string            `json:"id"`
+	Name            string            `json:"name"`
+	MIMEType        string            `json:"mimeType"`
+	Size            string            `json:"size,omitempty"`
+	ModifiedTime    string            `json:"modifiedTime,omitempty"`
+	MD5Checksum     string            `json:"md5Checksum,omitempty"`
+	WebViewLink     string            `json:"webViewLink,omitempty"`
+	WebContentLink  string            `json:"webContentLink,omitempty"`
+	ResourceKey     string            `json:"resourceKey,omitempty"`
+	ExportLinks     map[string]string `json:"exportLinks,omitempty"`
+	ShortcutDetails *ShortcutDetails  `json:"shortcutDetails,omitempty"`
+}
+
+type ShortcutDetails struct {
+	TargetID       string `json:"targetId,omitempty"`
+	TargetMIMEType string `json:"targetMimeType,omitempty"`
+}
+
+type FileList struct {
+	Files            []File `json:"files"`
+	NextPageToken    string `json:"nextPageToken,omitempty"`
+	IncompleteSearch bool   `json:"incompleteSearch,omitempty"`
+}
+
+type ListOptions struct {
+	FolderID  string
+	PageSize  int
+	PageToken string
+	OrderBy   string
+	Type      string
+}
+
+func NewClient(cfg config.Config) *Client {
+	return &Client{
+		cfg:        cfg,
+		token:      cfg.Token,
+		httpClient: http.DefaultClient,
+	}
+}
+
+func (c *Client) ListChildren(ctx context.Context, opts ListOptions) (*FileList, error) {
+	if opts.FolderID == "" {
+		return nil, errors.New("folder ID is required")
+	}
+	q := "trashed=false and " + quote(opts.FolderID) + " in parents"
+	switch opts.Type {
+	case "", "all":
+	case "files":
+		q += " and mimeType != " + quote(FolderMIME)
+	case "dirs", "folders":
+		q += " and mimeType = " + quote(FolderMIME)
+	default:
+		return nil, fmt.Errorf("invalid list type %q", opts.Type)
+	}
+
+	values := c.baseListValues()
+	values.Set("q", q)
+	values.Set("fields", "nextPageToken,incompleteSearch,files(id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,shortcutDetails)")
+	values.Set("pageSize", fmt.Sprintf("%d", normalizePageSize(opts.PageSize)))
+	if opts.PageToken != "" {
+		values.Set("pageToken", opts.PageToken)
+	}
+	if opts.OrderBy != "" {
+		values.Set("orderBy", opts.OrderBy)
+	}
+
+	var out FileList
+	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ResolvePath(ctx context.Context, p string, rootFolderID string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" || p == "/" {
+		return rootFolderID, nil
+	}
+	parts := strings.Split(strings.Trim(p, "/"), "/")
+	parent := rootFolderID
+	for _, raw := range parts {
+		segment, err := url.PathUnescape(raw)
+		if err != nil {
+			return "", err
+		}
+		if segment == "" {
+			continue
+		}
+		matches, err := c.findFolderByName(ctx, parent, segment)
+		if err != nil {
+			return "", err
+		}
+		switch len(matches) {
+		case 0:
+			return "", fmt.Errorf("%w: folder %q under %q", ErrNotFound, segment, parent)
+		case 1:
+			parent = matches[0].ID
+		default:
+			return "", &AmbiguousPathError{Segment: segment, Parent: parent, Count: len(matches)}
+		}
+	}
+	return parent, nil
+}
+
+func (c *Client) GetFile(ctx context.Context, id string) (*File, error) {
+	if id == "" {
+		return nil, errors.New("file ID is required")
+	}
+	values := c.baseGetValues()
+	values.Set("fields", "id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,exportLinks,shortcutDetails")
+	var out File
+	err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files/"+url.PathEscape(id)+"?"+values.Encode(), &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) Download(ctx context.Context, method string, id string, rangeHeader string) (*http.Response, error) {
+	if id == "" {
+		return nil, errors.New("file ID is required")
+	}
+	if method == "" {
+		method = http.MethodGet
+	}
+	values := c.baseGetValues()
+	values.Set("alt", "media")
+	req, err := http.NewRequestWithContext(ctx, method, "https://www.googleapis.com/drive/v3/files/"+url.PathEscape(id)+"?"+values.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	if rangeHeader != "" {
+		req.Header.Set("Range", rangeHeader)
+	}
+	return c.do(req)
+}
+
+func (c *Client) findFolderByName(ctx context.Context, parentID, name string) ([]File, error) {
+	q := "trashed=false and " + quote(parentID) + " in parents and name = " + quote(name) + " and mimeType = " + quote(FolderMIME)
+	values := c.baseListValues()
+	values.Set("q", q)
+	values.Set("fields", "files(id,name,mimeType)")
+	values.Set("pageSize", "2")
+	var out FileList
+	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), &out); err != nil {
+		return nil, err
+	}
+	return out.Files, nil
+}
+
+func (c *Client) baseListValues() url.Values {
+	values := url.Values{}
+	values.Set("supportsAllDrives", "true")
+	values.Set("includeItemsFromAllDrives", "true")
+	values.Set("spaces", "drive")
+	if c.cfg.DriveID != "" {
+		values.Set("corpora", "drive")
+		values.Set("driveId", c.cfg.DriveID)
+	}
+	return values
+}
+
+func (c *Client) baseGetValues() url.Values {
+	values := url.Values{}
+	values.Set("supportsAllDrives", "true")
+	return values
+}
+
+func (c *Client) getJSON(ctx context.Context, requestURL string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return err
+	}
+	res, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if err := json.NewDecoder(res.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode Drive response: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	token, err := c.accessToken(req.Context(), false)
+	if err != nil {
+		return nil, err
+	}
+	req = cloneRequest(req)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode == http.StatusUnauthorized && c.canRefresh() {
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		token, err = c.accessToken(req.Context(), true)
+		if err != nil {
+			return nil, err
+		}
+		req = cloneRequest(req)
+		req.Header.Set("Authorization", "Bearer "+token)
+		res, err = c.httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if res.StatusCode >= 400 {
+		defer res.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+		return nil, fmt.Errorf("Drive API %s: %s", res.Status, strings.TrimSpace(string(body)))
+	}
+	return res, nil
+}
+
+func (c *Client) canRefresh() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.token.RefreshToken != ""
+}
+
+func (c *Client) accessToken(ctx context.Context, force bool) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !force && c.token.AccessToken != "" && (c.token.Expiry.IsZero() || time.Until(c.token.Expiry) > time.Minute) {
+		return c.token.AccessToken, nil
+	}
+	if c.token.RefreshToken == "" {
+		if c.token.AccessToken != "" {
+			return c.token.AccessToken, nil
+		}
+		return "", errors.New("missing access token and refresh token")
+	}
+
+	form := url.Values{}
+	form.Set("client_id", c.cfg.ClientID)
+	if c.cfg.ClientSecret != "" {
+		form.Set("client_secret", c.cfg.ClientSecret)
+	}
+	form.Set("refresh_token", c.token.RefreshToken)
+	form.Set("grant_type", "refresh_token")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://oauth2.googleapis.com/token", strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+		return "", fmt.Errorf("refresh token failed: %s: %s", res.Status, strings.TrimSpace(string(body)))
+	}
+	var refreshed struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresIn   int64  `json:"expires_in"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&refreshed); err != nil {
+		return "", fmt.Errorf("decode token refresh: %w", err)
+	}
+	if refreshed.AccessToken == "" {
+		return "", errors.New("token refresh returned empty access token")
+	}
+	c.token.AccessToken = refreshed.AccessToken
+	c.token.TokenType = refreshed.TokenType
+	if c.token.TokenType == "" {
+		c.token.TokenType = "Bearer"
+	}
+	if refreshed.ExpiresIn > 0 {
+		c.token.Expiry = time.Now().Add(time.Duration(refreshed.ExpiresIn) * time.Second)
+	}
+	return c.token.AccessToken, nil
+}
+
+func quote(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
+	return "'" + s + "'"
+}
+
+func normalizePageSize(n int) int {
+	if n <= 0 {
+		return 1000
+	}
+	if n > 1000 {
+		return 1000
+	}
+	return n
+}
+
+func cloneRequest(req *http.Request) *http.Request {
+	cloned := req.Clone(req.Context())
+	cloned.Header = req.Header.Clone()
+	return cloned
+}

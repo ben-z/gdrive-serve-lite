@@ -1,0 +1,11 @@
+/gdrive-serve-lite
+*.log
+.DS_Store
+tmp/
+dist/
+
+# Local credentials and machine-specific overrides.
+/.env
+/.env.*
+!/.env.example
+/*.local
