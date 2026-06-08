@@ -169,7 +169,7 @@ func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errors.New("id is required"))
 		return
 	}
-	file, err := s.drive.GetFile(r.Context(), id)
+	file, err := s.drive.GetFileWithResourceKey(r.Context(), id, r.URL.Query().Get("resourceKey"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -187,7 +187,7 @@ func (s *Server) handleExportFormats(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errors.New("id is required"))
 		return
 	}
-	file, err := s.drive.GetFile(r.Context(), id)
+	file, err := s.drive.GetFileWithResourceKey(r.Context(), id, r.URL.Query().Get("resourceKey"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -220,7 +220,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	_, rawName, _ := strings.Cut(rest, "/")
 	name, _ := url.PathUnescape(rawName)
 
-	file, err := s.drive.GetFile(r.Context(), fileID)
+	file, err := s.drive.GetFileWithResourceKey(r.Context(), fileID, r.URL.Query().Get("resourceKey"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -261,7 +261,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.drive.Download(r.Context(), r.Method, fileID, r.Header.Get("Range"))
+	res, err := s.drive.DownloadWithResourceKey(r.Context(), r.Method, fileID, r.Header.Get("Range"), r.URL.Query().Get("resourceKey"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -302,6 +302,7 @@ func (s *Server) handlePathFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file drive.File, name string) {
+	id, resourceKey := readableFileIDAndKey(file)
 	if r.Method == http.MethodHead {
 		if drive.IsWorkspaceFile(file) || exportRequested(r) {
 			format, err := exportFormatFromRequest(r, file)
@@ -324,7 +325,7 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 		s.streamExport(w, r, file, format, name)
 		return
 	}
-	res, err := s.drive.Download(r.Context(), r.Method, file.ID, r.Header.Get("Range"))
+	res, err := s.drive.DownloadWithResourceKey(r.Context(), r.Method, id, r.Header.Get("Range"), resourceKey)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -366,7 +367,7 @@ func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p strin
 }
 
 func (s *Server) handleFileHead(w http.ResponseWriter, r *http.Request, fileID string, name string) {
-	meta, err := s.drive.GetFile(r.Context(), fileID)
+	meta, err := s.drive.GetFileWithResourceKey(r.Context(), fileID, r.URL.Query().Get("resourceKey"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -379,7 +380,8 @@ func (s *Server) streamExport(w http.ResponseWriter, r *http.Request, file drive
 		writeError(w, errors.New("Range is not supported for Drive exports"))
 		return
 	}
-	res, err := s.drive.Export(r.Context(), file.ID, format.MIMEType)
+	id, resourceKey := readableFileIDAndKey(file)
+	res, err := s.drive.ExportWithResourceKey(r.Context(), id, format.MIMEType, resourceKey)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -644,6 +646,13 @@ func exportName(name string, format drive.ExportFormat) string {
 		return name
 	}
 	return name + "." + format.Extension
+}
+
+func readableFileIDAndKey(file drive.File) (string, string) {
+	if file.ShortcutDetails != nil && file.ShortcutDetails.TargetID != "" {
+		return file.ShortcutDetails.TargetID, file.ShortcutDetails.TargetResourceKey
+	}
+	return file.ID, file.ResourceKey
 }
 
 func intParam(r *http.Request, name string, fallback int) int {

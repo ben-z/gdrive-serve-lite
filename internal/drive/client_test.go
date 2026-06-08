@@ -157,6 +157,59 @@ func TestDownloadForwardsRange(t *testing.T) {
 	}
 }
 
+func TestDownloadForwardsResourceKey(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "file-1/resource-key-1" {
+				t.Fatalf("resource key header = %q", got)
+			}
+			return textResponse(http.StatusOK, "ok"), nil
+		}),
+	})
+
+	resp, err := client.DownloadWithResourceKey(context.Background(), http.MethodGet, "file-1", "", "resource-key-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+}
+
+func TestGetFileForwardsResourceKey(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "file-1/resource-key-1" {
+				t.Fatalf("resource key header = %q", got)
+			}
+			return jsonResponse(http.StatusOK, `{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}`), nil
+		}),
+	})
+
+	file, err := client.GetFileWithResourceKey(context.Background(), "file-1", "resource-key-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.ID != "file-1" {
+		t.Fatalf("file = %+v", file)
+	}
+}
+
+func TestExportForwardsResourceKey(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "doc-1/resource-key-1" {
+				t.Fatalf("resource key header = %q", got)
+			}
+			return textResponse(http.StatusOK, "%PDF"), nil
+		}),
+	})
+
+	resp, err := client.ExportWithResourceKey(context.Background(), "doc-1", "application/pdf", "resource-key-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+}
+
 func TestListChildrenRejectsRepeatedPageToken(t *testing.T) {
 	client := NewClientWithHTTPClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

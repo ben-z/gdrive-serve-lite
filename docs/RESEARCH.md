@@ -9,6 +9,7 @@ Build a Google Drive-specific HTTP server that covers the useful read-only parts
 - Google Drive `files.list` REST reference: https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list
 - Google Drive search query guide: https://developers.google.com/workspace/drive/api/guides/search-files
 - Google Drive download/export guide: https://developers.google.cn/workspace/drive/api/guides/manage-downloads?hl=en
+- Google Drive resource key guide: https://developers.google.com/workspace/drive/api/guides/resource-keys
 - Google OAuth 2.0 overview and installed app docs: https://developers.google.com/identity/protocols/oauth2 and https://developers.google.com/identity/protocols/oauth2/native-app
 - rclone `serve http` docs: https://rclone.org/commands/rclone_serve_http/
 
@@ -80,6 +81,8 @@ GET https://www.googleapis.com/drive/v3/files/{fileId}/export?mimeType=...
 
 Exports are all-at-once reads and are capped by Drive, so the server rejects `Range` for exports instead of pretending media seeking works there. Blob reads remain the fast path: `GET /file/{id}` still maps directly to one `alt=media` request.
 
+Drive link-shared files can require resource keys. The Drive API returns them in `resourceKey`, and shortcut target keys in `shortcutDetails.targetResourceKey`. Requests that need them use the `X-Goog-Drive-Resource-Keys` header with `fileId/resourceKey` pairs. Path-based reads can use the key from metadata; ID-based reads accept `resourceKey=...`.
+
 ### OAuth
 
 Access tokens go in the `Authorization: Bearer ...` header. Refresh tokens can be used with Google's token endpoint to obtain new access tokens. Since this tool is initially a local read-only server, it can reuse an existing rclone remote's OAuth material or read credentials from environment variables.
@@ -134,6 +137,7 @@ That rclone-generated encrypted fixture is covered by unit tests.
 - exact-query directory/list response cache with TTL; cache keys include page token and pagination knobs
 - optional HTTP Basic Auth with `--user` and `--pass`
 - rclone-style `--remote remote:path` root selection, resolved once at startup
+- Drive resource-key propagation for link-shared files and shortcut targets
 
 ## Local timings that motivated this
 
