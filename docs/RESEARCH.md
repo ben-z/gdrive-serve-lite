@@ -143,6 +143,7 @@ That rclone-generated encrypted fixture is covered by unit tests.
 - optional HTTP Basic Auth with `--user` and `--pass`
 - rclone-style `--remote remote:path` root selection, resolved once at startup
 - Drive resource-key propagation for link-shared files and shortcut targets
+- optional root folder resource key for link-shared served roots
 - bounded waits for Google response headers without imposing a whole-body timeout on large media streams
 
 ## Local timings that motivated this

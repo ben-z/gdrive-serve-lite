@@ -256,14 +256,23 @@ func (c *Client) listChildrenPage(ctx context.Context, opts ListOptions, pageTok
 }
 
 func (c *Client) ResolvePath(ctx context.Context, p string, rootFolderID string) (string, error) {
-	item, err := c.ResolveItemPath(ctx, p, rootFolderID, "folder")
+	return c.ResolvePathWithResourceKey(ctx, p, rootFolderID, "", "folder")
+}
+
+func (c *Client) ResolvePathWithResourceKey(ctx context.Context, p string, rootFolderID string, rootResourceKey string, itemType string) (string, error) {
+	item, err := c.ResolveItemPathWithResourceKey(ctx, p, rootFolderID, rootResourceKey, itemType)
 	if err != nil {
 		return "", err
 	}
-	return item.File.ID, nil
+	id, _ := ReadableFileIDAndResourceKey(item.File)
+	return id, nil
 }
 
 func (c *Client) ResolveItemPath(ctx context.Context, p string, rootFolderID string, itemType string) (*ResolvedItem, error) {
+	return c.ResolveItemPathWithResourceKey(ctx, p, rootFolderID, "", itemType)
+}
+
+func (c *Client) ResolveItemPathWithResourceKey(ctx context.Context, p string, rootFolderID string, rootResourceKey string, itemType string) (*ResolvedItem, error) {
 	itemType, err := normalizeItemType(itemType)
 	if err != nil {
 		return nil, err
@@ -276,15 +285,16 @@ func (c *Client) ResolveItemPath(ctx context.Context, p string, rootFolderID str
 		return &ResolvedItem{
 			Path: "/",
 			File: File{
-				ID:       rootFolderID,
-				Name:     "/",
-				MIMEType: FolderMIME,
+				ID:          rootFolderID,
+				Name:        "/",
+				MIMEType:    FolderMIME,
+				ResourceKey: rootResourceKey,
 			},
 		}, nil
 	}
 	parts := strings.Split(strings.Trim(p, "/"), "/")
 	parent := rootFolderID
-	parentResourceKey := ""
+	parentResourceKey := rootResourceKey
 	resolvedParent := ""
 	cleanParts := make([]string, 0, len(parts))
 	var resolved File
@@ -311,8 +321,7 @@ func (c *Client) ResolveItemPath(ctx context.Context, p string, rootFolderID str
 		case 1:
 			resolved = matches[0]
 			resolvedParent = parent
-			parent = readableFileID(matches[0])
-			parentResourceKey = readableResourceKey(matches[0])
+			parent, parentResourceKey = ReadableFileIDAndResourceKey(matches[0])
 		default:
 			return nil, &AmbiguousPathError{Segment: segment, Parent: parent, Count: len(matches)}
 		}
@@ -324,9 +333,10 @@ func (c *Client) ResolveItemPath(ctx context.Context, p string, rootFolderID str
 		return &ResolvedItem{
 			Path: "/",
 			File: File{
-				ID:       rootFolderID,
-				Name:     "/",
-				MIMEType: FolderMIME,
+				ID:          rootFolderID,
+				Name:        "/",
+				MIMEType:    FolderMIME,
+				ResourceKey: rootResourceKey,
 			},
 		}, nil
 	}
@@ -843,18 +853,11 @@ func copySelectedHeaders(dst http.Header, src http.Header, keys ...string) {
 	}
 }
 
-func readableFileID(file File) string {
+func ReadableFileIDAndResourceKey(file File) (string, string) {
 	if file.ShortcutDetails != nil && file.ShortcutDetails.TargetID != "" {
-		return file.ShortcutDetails.TargetID
+		return file.ShortcutDetails.TargetID, file.ShortcutDetails.TargetResourceKey
 	}
-	return file.ID
-}
-
-func readableResourceKey(file File) string {
-	if file.ShortcutDetails != nil && file.ShortcutDetails.TargetID != "" {
-		return file.ShortcutDetails.TargetResourceKey
-	}
-	return file.ResourceKey
+	return file.ID, file.ResourceKey
 }
 
 func setResourceKeyHeader(req *http.Request, id string, resourceKey string) {

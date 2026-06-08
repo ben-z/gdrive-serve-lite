@@ -19,12 +19,13 @@ type OAuthToken struct {
 }
 
 type Config struct {
-	ClientID     string
-	ClientSecret string
-	Token        OAuthToken
-	DriveID      string
-	RootFolderID string
-	Source       string
+	ClientID        string
+	ClientSecret    string
+	Token           OAuthToken
+	DriveID         string
+	RootFolderID    string
+	RootResourceKey string
+	Source          string
 }
 
 type LoadOptions struct {
@@ -98,9 +99,10 @@ func loadEnv() (Config, bool) {
 			RefreshToken: refreshToken,
 			Expiry:       expiry,
 		},
-		DriveID:      os.Getenv("GDSL_DRIVE_ID"),
-		RootFolderID: os.Getenv("GDSL_ROOT_FOLDER_ID"),
-		Source:       "env",
+		DriveID:         os.Getenv("GDSL_DRIVE_ID"),
+		RootFolderID:    os.Getenv("GDSL_ROOT_FOLDER_ID"),
+		RootResourceKey: os.Getenv("GDSL_ROOT_RESOURCE_KEY"),
+		Source:          "env",
 	}, true
 }
 

@@ -19,6 +19,7 @@ func main() {
 	remote := flag.String("remote", "", "rclone remote name to read OAuth config from")
 	configPath := flag.String("config", "", "rclone config file path")
 	rootFolderID := flag.String("root-folder-id", "", "Drive folder ID to use as browse/resolve root")
+	rootResourceKey := flag.String("root-resource-key", "", "Drive resource key for --root-folder-id")
 	rootPath := flag.String("root-path", "", "Drive folder path to use as browse/resolve root")
 	driveID := flag.String("drive-id", "", "shared drive ID override")
 	metadataCacheTTL := flag.Duration("metadata-cache-ttl", drive.DefaultMetadataCacheTTL, "positive metadata/path lookup cache TTL; 0 disables")
@@ -45,6 +46,9 @@ func main() {
 	if *rootFolderID != "" {
 		cfg.RootFolderID = *rootFolderID
 	}
+	if *rootResourceKey != "" {
+		cfg.RootResourceKey = *rootResourceKey
+	}
 	if *driveID != "" {
 		cfg.DriveID = *driveID
 	}
@@ -56,20 +60,21 @@ func main() {
 	client.SetMetadataCacheTTL(*metadataCacheTTL)
 	client.SetListCacheTTL(*listCacheTTL)
 	effectiveRootID := cfg.EffectiveRootFolderID()
+	effectiveRootResourceKey := cfg.RootResourceKey
 	if *rootFolderID == "" {
 		selectedRootPath := *rootPath
 		if selectedRootPath == "" {
 			selectedRootPath = remoteRootPath
 		}
 		if selectedRootPath != "" && selectedRootPath != "/" {
-			resolvedRootID, err := client.ResolvePath(ctx, selectedRootPath, effectiveRootID)
+			resolvedRoot, err := client.ResolveItemPathWithResourceKey(ctx, selectedRootPath, effectiveRootID, effectiveRootResourceKey, "folder")
 			if err != nil {
 				log.Fatalf("resolve root path %q: %v", selectedRootPath, err)
 			}
-			effectiveRootID = resolvedRootID
+			effectiveRootID, effectiveRootResourceKey = drive.ReadableFileIDAndResourceKey(resolvedRoot.File)
 		}
 	}
-	app := server.New(client, effectiveRootID)
+	app := server.NewWithRootResourceKey(client, effectiveRootID, effectiveRootResourceKey)
 	app.SetBasicAuth(*httpUser, *httpPass)
 	httpServer := &http.Server{
 		Addr:              *addr,

@@ -86,6 +86,42 @@ func TestAPIListDefaultsToRootFolder(t *testing.T) {
 	}
 }
 
+func TestAPIListDefaultsToRootFolderResourceKey(t *testing.T) {
+	cfg := config.Config{
+		ClientID:     "test-client",
+		RootFolderID: "root-folder",
+		Token: config.OAuthToken{
+			AccessToken: "test-access",
+			TokenType:   "Bearer",
+		},
+	}
+	client := drive.NewClientWithHTTPClient(cfg, &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "root-folder/root-key-1" {
+			t.Fatalf("resource key header = %q", got)
+		}
+		query := req.URL.Query().Get("q")
+		if !strings.Contains(query, "'root-folder' in parents") {
+			t.Fatalf("query = %q", query)
+		}
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
+	})})
+	app := NewWithRootResourceKey(client, cfg.RootFolderID, "root-key-1")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/list?type=files&pageSize=1000&limit=1000", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.FolderID != "root-folder" || body.ResourceKey != "root-key-1" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
 func TestAPIListUsesExactListCache(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {
