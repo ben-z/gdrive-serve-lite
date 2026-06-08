@@ -630,7 +630,8 @@ func TestFileEndpointStreamsMediaInOneDriveRequest(t *testing.T) {
 		resp.Header.Set("Content-Range", "bytes 1-3/10")
 		resp.Header.Set("Content-Disposition", "attachment; filename=drive-name.mp4")
 		resp.Header.Set("Cache-Control", "private, max-age=60")
-		resp.Header.Set("X-Goog-Hash", "crc32c=abcd")
+		resp.Header.Add("X-Goog-Hash", "crc32c=abcd")
+		resp.Header.Add("X-Goog-Hash", "md5=efgh")
 		return resp, nil
 	})
 
@@ -656,8 +657,8 @@ func TestFileEndpointStreamsMediaInOneDriveRequest(t *testing.T) {
 	if rec.Header().Get("Cache-Control") != "private, max-age=60" {
 		t.Fatalf("Cache-Control = %q", rec.Header().Get("Cache-Control"))
 	}
-	if rec.Header().Get("X-Goog-Hash") != "crc32c=abcd" {
-		t.Fatalf("X-Goog-Hash = %q", rec.Header().Get("X-Goog-Hash"))
+	if got := rec.Result().Header.Values("X-Goog-Hash"); len(got) != 2 || got[0] != "crc32c=abcd" || got[1] != "md5=efgh" {
+		t.Fatalf("X-Goog-Hash = %q", got)
 	}
 }
 
