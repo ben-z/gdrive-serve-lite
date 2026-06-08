@@ -519,6 +519,7 @@ func TestFileEndpointStreamsMediaInOneDriveRequest(t *testing.T) {
 		resp.Header.Set("Content-Type", "video/mp4")
 		resp.Header.Set("Content-Length", "3")
 		resp.Header.Set("Content-Range", "bytes 1-3/10")
+		resp.Header.Set("Content-Disposition", "attachment; filename=drive-name.mp4")
 		return resp, nil
 	})
 
@@ -538,7 +539,7 @@ func TestFileEndpointStreamsMediaInOneDriveRequest(t *testing.T) {
 	if rec.Header().Get("Content-Range") != "bytes 1-3/10" {
 		t.Fatalf("Content-Range = %q", rec.Header().Get("Content-Range"))
 	}
-	if !strings.Contains(rec.Header().Get("Content-Disposition"), "video.mp4") {
+	if rec.Header().Get("Content-Disposition") != "attachment; filename=drive-name.mp4" {
 		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
 	}
 }
@@ -741,6 +742,7 @@ func TestExportEndpointDefaultsToRcloneLikeFormat(t *testing.T) {
 			resp := textResponse(http.StatusOK, "docx-bytes")
 			resp.Header.Set("Content-Type", drive.OpenXMLDocumentMIME)
 			resp.Header.Set("Content-Length", "10")
+			resp.Header.Set("Content-Disposition", "attachment; filename=drive-doc.docx")
 			return resp, nil
 		default:
 			t.Fatalf("unexpected request %d", calls)
@@ -763,7 +765,7 @@ func TestExportEndpointDefaultsToRcloneLikeFormat(t *testing.T) {
 	if rec.Header().Get("Content-Type") != drive.OpenXMLDocumentMIME {
 		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
 	}
-	if !strings.Contains(rec.Header().Get("Content-Disposition"), "Meeting%20Notes.docx") {
+	if rec.Header().Get("Content-Disposition") != "attachment; filename=drive-doc.docx" {
 		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
 	}
 }
