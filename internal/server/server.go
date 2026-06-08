@@ -553,9 +553,8 @@ func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p string, 
 	for _, f := range list.Files {
 		name := html.EscapeString(f.Name)
 		if isFolderLike(f) {
-			childPath := path.Join(p, f.Name)
 			childID, childResourceKey := readableFileIDAndKey(f)
-			link := withResourceKey("/browse"+urlPath(childPath)+"?folderId="+url.QueryEscape(childID), childResourceKey)
+			link := withResourceKey("/browse"+urlPathAppend(p, f.Name)+"?folderId="+url.QueryEscape(childID), childResourceKey)
 			fmt.Fprintf(w, "<tr><td><a href=\"%s\">%s/</a></td><td>folder</td><td></td><td>%s</td></tr>", html.EscapeString(link), name, html.EscapeString(f.ModifiedTime))
 			continue
 		}
@@ -600,6 +599,14 @@ func urlPath(p string) string {
 		parts[i] = url.PathEscape(parts[i])
 	}
 	return "/" + strings.Join(parts, "/")
+}
+
+func urlPathAppend(base string, segment string) string {
+	basePath := urlPath(base)
+	if basePath == "/" {
+		return "/" + url.PathEscape(segment)
+	}
+	return strings.TrimRight(basePath, "/") + "/" + url.PathEscape(segment)
 }
 
 func pathRest(r *http.Request, prefix string) string {
