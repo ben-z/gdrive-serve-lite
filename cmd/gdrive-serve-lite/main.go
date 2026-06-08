@@ -5,6 +5,8 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"path"
+	"strings"
 	"time"
 
 	"gdrive-serve-lite/internal/config"
@@ -17,6 +19,7 @@ func main() {
 	remote := flag.String("remote", "", "rclone remote name to read OAuth config from")
 	configPath := flag.String("config", "", "rclone config file path")
 	rootFolderID := flag.String("root-folder-id", "", "Drive folder ID to use as browse/resolve root")
+	rootPath := flag.String("root-path", "", "Drive folder path to use as browse/resolve root")
 	driveID := flag.String("drive-id", "", "shared drive ID override")
 	metadataCacheTTL := flag.Duration("metadata-cache-ttl", drive.DefaultMetadataCacheTTL, "positive metadata/path lookup cache TTL; 0 disables")
 	listCacheTTL := flag.Duration("list-cache-ttl", drive.DefaultListCacheTTL, "exact directory/list response cache TTL; 0 disables")
@@ -26,12 +29,13 @@ func main() {
 	if (*httpUser == "") != (*httpPass == "") {
 		log.Fatal("--user and --pass must be set together")
 	}
+	remoteName, remoteRootPath := splitRemotePath(*remote)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	cfg, err := config.Load(ctx, config.LoadOptions{
-		Remote:     *remote,
+		Remote:     remoteName,
 		ConfigPath: *configPath,
 	})
 	if err != nil {
@@ -50,7 +54,21 @@ func main() {
 	client := drive.NewClient(cfg)
 	client.SetMetadataCacheTTL(*metadataCacheTTL)
 	client.SetListCacheTTL(*listCacheTTL)
-	app := server.New(client, cfg.EffectiveRootFolderID())
+	effectiveRootID := cfg.EffectiveRootFolderID()
+	if *rootFolderID == "" {
+		selectedRootPath := *rootPath
+		if selectedRootPath == "" {
+			selectedRootPath = remoteRootPath
+		}
+		if selectedRootPath != "" && selectedRootPath != "/" {
+			resolvedRootID, err := client.ResolvePath(ctx, selectedRootPath, effectiveRootID)
+			if err != nil {
+				log.Fatalf("resolve root path %q: %v", selectedRootPath, err)
+			}
+			effectiveRootID = resolvedRootID
+		}
+	}
+	app := server.New(client, effectiveRootID)
 	app.SetBasicAuth(*httpUser, *httpPass)
 	httpServer := &http.Server{
 		Addr:              *addr,
@@ -58,8 +76,31 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("gdrive-serve-lite listening on http://%s (config=%s root=%s metadataCacheTTL=%s listCacheTTL=%s)", *addr, cfg.Source, cfg.EffectiveRootFolderID(), metadataCacheTTL.String(), listCacheTTL.String())
+	log.Printf("gdrive-serve-lite listening on http://%s (config=%s root=%s metadataCacheTTL=%s listCacheTTL=%s)", *addr, cfg.Source, effectiveRootID, metadataCacheTTL.String(), listCacheTTL.String())
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func splitRemotePath(remote string) (string, string) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return "", ""
+	}
+	name, root, ok := strings.Cut(remote, ":")
+	if !ok {
+		return remote, ""
+	}
+	return name, cleanRootPath(root)
+}
+
+func cleanRootPath(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return ""
+	}
+	if !strings.HasPrefix(root, "/") {
+		root = "/" + root
+	}
+	return path.Clean(root)
 }
