@@ -1114,10 +1114,8 @@ func TestExportEndpointRejectsRange(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		calls++
-		if calls != 1 {
-			t.Fatalf("unexpected export request %d", calls)
-		}
-		return jsonResponse(http.StatusOK, `{"id":"doc-1","name":"Notes","mimeType":"application/vnd.google-apps.document"}`), nil
+		t.Fatalf("unexpected Drive request %d: %s %s", calls, req.Method, req.URL.String())
+		return nil, nil
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/export/doc-1/Notes", nil)
@@ -1127,8 +1125,8 @@ func TestExportEndpointRejectsRange(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if calls != 1 {
-		t.Fatalf("calls = %d, want metadata only", calls)
+	if calls != 0 {
+		t.Fatalf("calls = %d, want no Drive requests", calls)
 	}
 	if !strings.Contains(rec.Body.String(), "Range is not supported") {
 		t.Fatalf("body = %q", rec.Body.String())
@@ -1521,6 +1519,36 @@ func TestPathEndpointExportsWorkspaceFile(t *testing.T) {
 	}
 	if !strings.Contains(rec.Header().Get("Content-Disposition"), "Notes.pdf") {
 		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+}
+
+func TestPathEndpointRejectsWorkspaceExportRangeBeforeExport(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"doc-1","name":"Notes","mimeType":"application/vnd.google-apps.document"}]}`), nil
+		default:
+			t.Fatalf("unexpected export request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/path/folder/Notes?format=pdf", nil)
+	req.Header.Set("Range", "bytes=0-9")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want path resolution only", calls)
+	}
+	if !strings.Contains(rec.Body.String(), "Range is not supported") {
+		t.Fatalf("body = %q", rec.Body.String())
 	}
 }
 
