@@ -25,11 +25,20 @@ go build ./cmd/gdrive-serve-lite
 ```sh
 ./gdrive-serve-lite \
   --remote drive-ro \
+  --config ~/.config/rclone/rclone.conf \
   --root-folder-id DRIVE_FOLDER_ID \
   --addr 127.0.0.1:8765
 ```
 
-If your rclone config is encrypted, provide `RCLONE_CONFIG_PASS` or use the environment variables below. The server only reads the rclone config; refreshed access tokens are kept in memory and are not written back.
+The `--config` flag is optional. If omitted, the server checks `RCLONE_CONFIG`, then the usual rclone config locations.
+
+If your rclone config is encrypted, provide `RCLONE_CONFIG_PASS` or use the environment variables below:
+
+```sh
+RCLONE_CONFIG_PASS='<rclone-config-password>' ./gdrive-serve-lite --remote drive-ro
+```
+
+The server decrypts rclone's `RCLONE_ENCRYPT_V0` config format directly. It only reads the rclone config; refreshed access tokens are kept in memory and are not written back.
 
 ## Run without rclone
 
@@ -77,4 +86,4 @@ http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4
 - no auth on the local HTTP server yet
 - no Google Workspace document export yet
 - duplicate folder names make path resolution ambiguous; use `folderId` directly when that happens
-
+- rclone config password input is environment-only for now; no interactive prompt

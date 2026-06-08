@@ -76,6 +76,39 @@ Access tokens go in the `Authorization: Bearer ...` header. Refresh tokens can b
 
 Do not write refreshed tokens back to rclone config in v0. Keep refresh state in memory.
 
+### Rclone encrypted config files
+
+Rclone's config encryption implementation lives in `fs/config/crypt.go`. The encrypted config starts with:
+
+```text
+RCLONE_ENCRYPT_V0:
+```
+
+The bytes after the header are base64. Decoded bytes are:
+
+```text
+24-byte nonce || nacl/secretbox ciphertext
+```
+
+The secretbox key is:
+
+```text
+SHA256("[" + NFKC(password) + "][rclone-config]")
+```
+
+Rclone rejects invalid UTF-8 passwords, warns about leading/trailing whitespace, normalizes with Unicode NFKC, and rejects empty or all-whitespace passwords. This project implements the same key derivation and decrypts encrypted rclone config files directly when `RCLONE_CONFIG_PASS` is set.
+
+Validation experiment: a fake rclone config file was generated locally and encrypted with:
+
+```sh
+RCLONE_CONFIG_PASS=fixture-pass \
+  rclone --config tmp/plain-rclone.conf \
+  --password-command 'printf fixture-pass' \
+  config encryption set
+```
+
+That rclone-generated encrypted fixture is covered by unit tests.
+
 ### rclone comparison
 
 `rclone serve http` uses the VFS layer and exposes broad filesystem-like behavior. That brings directory caching, file buffering, chunked reading, optional VFS file cache, auth options, templates, filters, and more. This project should not try to copy all of that at once. The first useful slice is:
@@ -118,4 +151,3 @@ GET /healthz
 - persistent token store independent of rclone
 - benchmark command that compares rclone and native Drive calls
 - optional compatibility mode for rclone-like directory templates
-
