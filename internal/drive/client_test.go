@@ -352,6 +352,112 @@ func TestExportForwardsResourceKey(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestGetFileRefreshesExpiredTokenBeforeRequest(t *testing.T) {
+	var calls int
+	cfg := testConfig()
+	cfg.Token.AccessToken = "stale-access"
+	cfg.Token.RefreshToken = "test-refresh"
+	cfg.Token.Expiry = time.Now().Add(-time.Hour)
+	client := NewClientWithHTTPClient(cfg, &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			switch calls {
+			case 1:
+				if req.Method != http.MethodPost || req.URL.Host != "oauth2.googleapis.com" || req.URL.Path != "/token" {
+					t.Fatalf("refresh request = %s %s", req.Method, req.URL.String())
+				}
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				form := string(body)
+				if !strings.Contains(form, "client_id=test-client") ||
+					!strings.Contains(form, "refresh_token=test-refresh") ||
+					!strings.Contains(form, "grant_type=refresh_token") {
+					t.Fatalf("refresh form = %q", form)
+				}
+				return jsonResponse(http.StatusOK, `{"access_token":"fresh-access","token_type":"Bearer","expires_in":3600}`), nil
+			case 2:
+				if req.URL.Path != "/drive/v3/files/file-1" {
+					t.Fatalf("path = %q", req.URL.Path)
+				}
+				if req.Header.Get("Authorization") != "Bearer fresh-access" {
+					t.Fatalf("Authorization = %q", req.Header.Get("Authorization"))
+				}
+				return jsonResponse(http.StatusOK, `{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}`), nil
+			default:
+				t.Fatalf("unexpected request %d", calls)
+				return nil, nil
+			}
+		}),
+	})
+
+	file, err := client.GetFile(context.Background(), "file-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.ID != "file-1" {
+		t.Fatalf("file = %+v", file)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestDownloadRefreshesAndRetriesUnauthorized(t *testing.T) {
+	var calls int
+	cfg := testConfig()
+	cfg.Token.AccessToken = "stale-access"
+	cfg.Token.RefreshToken = "test-refresh"
+	client := NewClientWithHTTPClient(cfg, &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			switch calls {
+			case 1:
+				if req.URL.Path != "/drive/v3/files/file-1" {
+					t.Fatalf("path = %q", req.URL.Path)
+				}
+				if req.Header.Get("Authorization") != "Bearer stale-access" {
+					t.Fatalf("Authorization = %q", req.Header.Get("Authorization"))
+				}
+				return jsonResponse(http.StatusUnauthorized, `{"error":"expired"}`), nil
+			case 2:
+				if req.Method != http.MethodPost || req.URL.Host != "oauth2.googleapis.com" || req.URL.Path != "/token" {
+					t.Fatalf("refresh request = %s %s", req.Method, req.URL.String())
+				}
+				return jsonResponse(http.StatusOK, `{"access_token":"fresh-access","token_type":"Bearer","expires_in":3600}`), nil
+			case 3:
+				if req.URL.Path != "/drive/v3/files/file-1" {
+					t.Fatalf("path = %q", req.URL.Path)
+				}
+				if req.Header.Get("Authorization") != "Bearer fresh-access" {
+					t.Fatalf("Authorization = %q", req.Header.Get("Authorization"))
+				}
+				return textResponse(http.StatusOK, "media-bytes"), nil
+			default:
+				t.Fatalf("unexpected request %d", calls)
+				return nil, nil
+			}
+		}),
+	})
+
+	resp, err := client.DownloadWithResourceKey(context.Background(), http.MethodGet, "file-1", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "media-bytes" {
+		t.Fatalf("body = %q", body)
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+}
+
 func TestListChildrenRejectsRepeatedPageToken(t *testing.T) {
 	client := NewClientWithHTTPClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
