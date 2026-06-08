@@ -520,6 +520,8 @@ func TestFileEndpointStreamsMediaInOneDriveRequest(t *testing.T) {
 		resp.Header.Set("Content-Length", "3")
 		resp.Header.Set("Content-Range", "bytes 1-3/10")
 		resp.Header.Set("Content-Disposition", "attachment; filename=drive-name.mp4")
+		resp.Header.Set("Cache-Control", "private, max-age=60")
+		resp.Header.Set("X-Goog-Hash", "crc32c=abcd")
 		return resp, nil
 	})
 
@@ -541,6 +543,12 @@ func TestFileEndpointStreamsMediaInOneDriveRequest(t *testing.T) {
 	}
 	if rec.Header().Get("Content-Disposition") != "attachment; filename=drive-name.mp4" {
 		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+	if rec.Header().Get("Cache-Control") != "private, max-age=60" {
+		t.Fatalf("Cache-Control = %q", rec.Header().Get("Cache-Control"))
+	}
+	if rec.Header().Get("X-Goog-Hash") != "crc32c=abcd" {
+		t.Fatalf("X-Goog-Hash = %q", rec.Header().Get("X-Goog-Hash"))
 	}
 }
 
@@ -777,6 +785,8 @@ func TestExportEndpointDefaultsToRcloneLikeFormat(t *testing.T) {
 			resp.Header.Set("Content-Type", drive.OpenXMLDocumentMIME)
 			resp.Header.Set("Content-Length", "10")
 			resp.Header.Set("Content-Disposition", "attachment; filename=drive-doc.docx")
+			resp.Header.Set("Cache-Control", "private, max-age=60")
+			resp.Header.Set("Expires", "Mon, 08 Jun 2026 13:34:56 GMT")
 			return resp, nil
 		default:
 			t.Fatalf("unexpected request %d", calls)
@@ -801,6 +811,12 @@ func TestExportEndpointDefaultsToRcloneLikeFormat(t *testing.T) {
 	}
 	if rec.Header().Get("Content-Disposition") != "attachment; filename=drive-doc.docx" {
 		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+	if rec.Header().Get("Cache-Control") != "private, max-age=60" {
+		t.Fatalf("Cache-Control = %q", rec.Header().Get("Cache-Control"))
+	}
+	if rec.Header().Get("Expires") != "Mon, 08 Jun 2026 13:34:56 GMT" {
+		t.Fatalf("Expires = %q", rec.Header().Get("Expires"))
 	}
 }
 
