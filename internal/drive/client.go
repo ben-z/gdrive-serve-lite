@@ -127,12 +127,12 @@ type ListOptions struct {
 }
 
 func NewClient(cfg config.Config) *Client {
-	return NewClientWithHTTPClient(cfg, http.DefaultClient)
+	return NewClientWithHTTPClient(cfg, NewHTTPClient(0))
 }
 
 func NewClientWithHTTPClient(cfg config.Config, httpClient *http.Client) *Client {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = NewHTTPClient(0)
 	}
 	return &Client{
 		cfg:              cfg,
@@ -144,6 +144,13 @@ func NewClientWithHTTPClient(cfg config.Config, httpClient *http.Client) *Client
 		lookupCache:      map[string]cachedFiles{},
 		listCache:        map[string]cachedList{},
 	}
+}
+
+func NewHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = responseHeaderTimeout
+	transport.DisableCompression = true
+	return &http.Client{Transport: transport}
 }
 
 func (c *Client) SetMetadataCacheTTL(ttl time.Duration) {
