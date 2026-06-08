@@ -132,6 +132,8 @@ curl 'http://127.0.0.1:8765/?format=json&type=files&pageSize=1000&limit=1000'
 curl -H 'Accept: application/json' 'http://127.0.0.1:8765/Videos/Clips?type=files&pageSize=1000&limit=1000'
 ```
 
+`HEAD` on folder paths and `/browse/...` resolves the folder and returns the listing content type without fetching a Drive page.
+
 Download or stream a file:
 
 ```text

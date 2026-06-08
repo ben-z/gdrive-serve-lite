@@ -397,6 +397,36 @@ func TestRootCompatibleFolderPathCanReturnJSONListing(t *testing.T) {
 	}
 }
 
+func TestBrowseHeadResolvesFolderButDoesNotList(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		query := req.URL.Query().Get("q")
+		if !strings.Contains(query, "'root-folder' in parents") ||
+			!strings.Contains(query, "name = 'folder'") {
+			t.Fatalf("resolve query = %q", query)
+		}
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodHead, "/browse/folder", nil)
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want folder resolution only", calls)
+	}
+	if !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
 func TestRootCompatibleFilePathStreamsMedia(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {
