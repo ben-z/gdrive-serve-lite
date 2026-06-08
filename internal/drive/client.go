@@ -108,12 +108,13 @@ type FileList struct {
 }
 
 type ListOptions struct {
-	FolderID  string
-	PageSize  int
-	Limit     int
-	PageToken string
-	OrderBy   string
-	Type      string
+	FolderID    string
+	ResourceKey string
+	PageSize    int
+	Limit       int
+	PageToken   string
+	OrderBy     string
+	Type        string
 }
 
 func NewClient(cfg config.Config) *Client {
@@ -238,7 +239,7 @@ func (c *Client) listChildrenPage(ctx context.Context, opts ListOptions, pageTok
 	}
 
 	var out FileList
-	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), &out); err != nil {
+	if err := c.getJSONWithResourceKey(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), opts.FolderID, opts.ResourceKey, &out); err != nil {
 		return nil, err
 	}
 	annotateListExports(&out)
@@ -673,6 +674,7 @@ func fileCacheKey(id, resourceKey string) string {
 func listCacheKey(opts ListOptions, pageSize int, limit int) string {
 	return strings.Join([]string{
 		opts.FolderID,
+		opts.ResourceKey,
 		opts.Type,
 		opts.PageToken,
 		opts.OrderBy,

@@ -73,6 +73,12 @@ List a folder by ID:
 curl 'http://127.0.0.1:8765/api/list?folderId=1-jJX3Mj7V6Afs-Elmr3g6AgwFo5KLgCM&type=files&pageSize=1000&limit=1000'
 ```
 
+For link-shared folders that require a Drive resource key:
+
+```sh
+curl 'http://127.0.0.1:8765/api/list?folderId=DRIVE_FOLDER_ID&resourceKey=RESOURCE_KEY&type=files&pageSize=1000&limit=1000'
+```
+
 If `folderId` and `path` are omitted, `/api/list` lists the configured root folder:
 
 ```sh
@@ -131,7 +137,7 @@ http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4?resourceKey=RESOURCE_KEY
 
 `GET /file/...` forwards directly to Drive `alt=media` and preserves `Range`, so media seeking is a single upstream Drive request. `HEAD /file/...` uses one metadata request and returns length/type headers without streaming file bytes.
 
-If Drive returns a `resourceKey` or `shortcutDetails.targetResourceKey` in metadata, path-based reads automatically pass it through on the upstream Drive request. ID-based endpoints accept `resourceKey=...` explicitly.
+If Drive returns a `resourceKey` or `shortcutDetails.targetResourceKey` in metadata, path-based reads and generated browser links automatically pass it through on the upstream Drive request. ID-based endpoints accept `resourceKey=...` explicitly.
 
 Export a Google Docs/Sheets/Slides file:
 

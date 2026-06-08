@@ -113,6 +113,36 @@ func TestAPIListUsesExactListCache(t *testing.T) {
 	}
 }
 
+func TestAPIListForwardsFolderResourceKey(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "folder-1/folder-key-1" {
+			t.Fatalf("resource key header = %q", got)
+		}
+		query := req.URL.Query().Get("q")
+		if !strings.Contains(query, "'folder-1' in parents") {
+			t.Fatalf("query = %q", query)
+		}
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}],"nextPageToken":"tok-2"}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/list?folderId=folder-1&resourceKey=folder-key-1&pageSize=1&limit=1", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.ResourceKey != "folder-key-1" {
+		t.Fatalf("ResourceKey = %q", body.ResourceKey)
+	}
+	if !strings.Contains(body.Next, "resourceKey=folder-key-1") {
+		t.Fatalf("Next = %q", body.Next)
+	}
+}
+
 func TestBasicAuthRejectsUnauthorizedRequests(t *testing.T) {
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		t.Fatal("Drive transport should not be reached")
@@ -208,6 +238,37 @@ func TestRootPathCanReturnJSONListing(t *testing.T) {
 	}
 	if !strings.Contains(body.Next, "format=json") || !strings.Contains(body.Next, "pageToken=tok-2") {
 		t.Fatalf("Next = %q", body.Next)
+	}
+}
+
+func TestRootPathHTMLLinksPreserveResourceKeysAndShortcutTargets(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{
+			"files":[
+				{"id":"folder-1","name":"Shared","mimeType":"application/vnd.google-apps.folder","resourceKey":"folder-key-1"},
+				{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","resourceKey":"file-key-1"},
+				{"id":"doc-1","name":"Notes","mimeType":"application/vnd.google-apps.document","resourceKey":"doc-key-1"},
+				{"id":"shortcut-1","name":"shortcut.mp4","mimeType":"application/vnd.google-apps.shortcut","shortcutDetails":{"targetId":"file-2","targetMimeType":"video/mp4","targetResourceKey":"target-key-1"}}
+			]
+		}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"/browse/Shared?folderId=folder-1&amp;resourceKey=folder-key-1",
+		"/file/file-1/video.mp4?resourceKey=file-key-1",
+		"/export/doc-1/Notes.docx?resourceKey=doc-key-1",
+		"/file/file-2/shortcut.mp4?resourceKey=target-key-1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
 	}
 }
 
@@ -625,6 +686,41 @@ func TestExportEndpointForwardsResourceKey(t *testing.T) {
 	}
 }
 
+func TestExportEndpointShortcutUsesTargetResourceKey(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "shortcut-1/shortcut-key-1" {
+				t.Fatalf("metadata resource key header = %q", got)
+			}
+			return jsonResponse(http.StatusOK, `{"id":"shortcut-1","name":"Notes shortcut","mimeType":"application/vnd.google-apps.shortcut","shortcutDetails":{"targetId":"doc-1","targetMimeType":"application/vnd.google-apps.document","targetResourceKey":"target-key-1"}}`), nil
+		case 2:
+			if req.URL.Path != "/drive/v3/files/doc-1/export" {
+				t.Fatalf("path = %q", req.URL.Path)
+			}
+			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "doc-1/target-key-1" {
+				t.Fatalf("export resource key header = %q", got)
+			}
+			return textResponse(http.StatusOK, "docx-bytes"), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/export/shortcut-1/Notes?resourceKey=shortcut-key-1", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
 func TestExportEndpointRejectsRange(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {
@@ -848,6 +944,49 @@ func TestPathEndpointFollowsShortcutTargetResourceKey(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("calls = %d, want 3", calls)
+	}
+}
+
+func TestPathEndpointExportsWorkspaceShortcutTarget(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"shortcut-1","name":"Notes shortcut","mimeType":"application/vnd.google-apps.shortcut","shortcutDetails":{"targetId":"doc-1","targetMimeType":"application/vnd.google-apps.document","targetResourceKey":"target-resource-key"}}]}`), nil
+		case 3:
+			if req.URL.Path != "/drive/v3/files/doc-1/export" {
+				t.Fatalf("path = %q", req.URL.Path)
+			}
+			if req.URL.Query().Get("mimeType") != "application/pdf" {
+				t.Fatalf("mimeType = %q", req.URL.Query().Get("mimeType"))
+			}
+			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "doc-1/target-resource-key" {
+				t.Fatalf("resource key header = %q", got)
+			}
+			return textResponse(http.StatusOK, "%PDF"), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/path/folder/Notes%20shortcut?format=pdf", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+	if rec.Body.String() != "%PDF" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), "Notes%20shortcut.pdf") {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
 	}
 }
 

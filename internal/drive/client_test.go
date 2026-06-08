@@ -174,6 +174,34 @@ func TestDownloadForwardsResourceKey(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestListChildrenForwardsFolderResourceKey(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "folder-1/folder-key-1" {
+				t.Fatalf("resource key header = %q", got)
+			}
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "'folder-1' in parents") {
+				t.Fatalf("query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4"}]}`), nil
+		}),
+	})
+
+	list, err := client.ListChildren(context.Background(), ListOptions{
+		FolderID:    "folder-1",
+		ResourceKey: "folder-key-1",
+		PageSize:    1000,
+		Limit:       1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Files) != 1 {
+		t.Fatalf("files = %d, want 1", len(list.Files))
+	}
+}
+
 func TestGetFileForwardsResourceKey(t *testing.T) {
 	client := NewClientWithHTTPClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
