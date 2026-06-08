@@ -90,8 +90,9 @@ type File struct {
 }
 
 type ShortcutDetails struct {
-	TargetID       string `json:"targetId,omitempty"`
-	TargetMIMEType string `json:"targetMimeType,omitempty"`
+	TargetID          string `json:"targetId,omitempty"`
+	TargetMIMEType    string `json:"targetMimeType,omitempty"`
+	TargetResourceKey string `json:"targetResourceKey,omitempty"`
 }
 
 type ResolvedItem struct {
@@ -325,25 +326,33 @@ func (c *Client) ResolveItemPath(ctx context.Context, p string, rootFolderID str
 }
 
 func (c *Client) GetFile(ctx context.Context, id string) (*File, error) {
+	return c.GetFileWithResourceKey(ctx, id, "")
+}
+
+func (c *Client) GetFileWithResourceKey(ctx context.Context, id string, resourceKey string) (*File, error) {
 	if id == "" {
 		return nil, errors.New("file ID is required")
 	}
-	if cached, ok := c.cachedFile(id); ok {
+	if cached, ok := c.cachedFile(fileCacheKey(id, resourceKey)); ok {
 		return &cached, nil
 	}
 	values := c.baseGetValues()
 	values.Set("fields", "id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,exportLinks,shortcutDetails")
 	var out File
-	err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files/"+url.PathEscape(id)+"?"+values.Encode(), &out)
+	err := c.getJSONWithResourceKey(ctx, "https://www.googleapis.com/drive/v3/files/"+url.PathEscape(id)+"?"+values.Encode(), id, resourceKey, &out)
 	if err != nil {
 		return nil, err
 	}
 	annotateFileExports(&out)
-	c.putCachedFile(out)
+	c.putCachedFile(fileCacheKey(id, resourceKey), out)
 	return &out, nil
 }
 
 func (c *Client) Download(ctx context.Context, method string, id string, rangeHeader string) (*http.Response, error) {
+	return c.DownloadWithResourceKey(ctx, method, id, rangeHeader, "")
+}
+
+func (c *Client) DownloadWithResourceKey(ctx context.Context, method string, id string, rangeHeader string, resourceKey string) (*http.Response, error) {
 	if id == "" {
 		return nil, errors.New("file ID is required")
 	}
@@ -359,10 +368,15 @@ func (c *Client) Download(ctx context.Context, method string, id string, rangeHe
 	if rangeHeader != "" {
 		req.Header.Set("Range", rangeHeader)
 	}
+	setResourceKeyHeader(req, id, resourceKey)
 	return c.do(req)
 }
 
 func (c *Client) Export(ctx context.Context, id string, mimeType string) (*http.Response, error) {
+	return c.ExportWithResourceKey(ctx, id, mimeType, "")
+}
+
+func (c *Client) ExportWithResourceKey(ctx context.Context, id string, mimeType string, resourceKey string) (*http.Response, error) {
 	if id == "" {
 		return nil, errors.New("file ID is required")
 	}
@@ -375,6 +389,7 @@ func (c *Client) Export(ctx context.Context, id string, mimeType string) (*http.
 	if err != nil {
 		return nil, err
 	}
+	setResourceKeyHeader(req, id, resourceKey)
 	return c.do(req)
 }
 
@@ -429,10 +444,15 @@ func (c *Client) baseGetValues() url.Values {
 }
 
 func (c *Client) getJSON(ctx context.Context, requestURL string, out any) error {
+	return c.getJSONWithResourceKey(ctx, requestURL, "", "", out)
+}
+
+func (c *Client) getJSONWithResourceKey(ctx context.Context, requestURL string, id string, resourceKey string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return err
 	}
+	setResourceKeyHeader(req, id, resourceKey)
 	res, err := c.do(req)
 	if err != nil {
 		return err
@@ -546,18 +566,18 @@ func (c *Client) accessToken(ctx context.Context, force bool) (string, error) {
 	return c.token.AccessToken, nil
 }
 
-func (c *Client) cachedFile(id string) (File, bool) {
+func (c *Client) cachedFile(key string) (File, bool) {
 	c.cacheMu.RLock()
 	ttl := c.metadataCacheTTL
-	entry, ok := c.fileCache[id]
+	entry, ok := c.fileCache[key]
 	c.cacheMu.RUnlock()
 	if ttl <= 0 || !ok {
 		return File{}, false
 	}
 	if time.Now().After(entry.expiresAt) {
 		c.cacheMu.Lock()
-		if current, ok := c.fileCache[id]; ok && time.Now().After(current.expiresAt) {
-			delete(c.fileCache, id)
+		if current, ok := c.fileCache[key]; ok && time.Now().After(current.expiresAt) {
+			delete(c.fileCache, key)
 		}
 		c.cacheMu.Unlock()
 		return File{}, false
@@ -565,7 +585,7 @@ func (c *Client) cachedFile(id string) (File, bool) {
 	return cloneFile(entry.file), true
 }
 
-func (c *Client) putCachedFile(file File) {
+func (c *Client) putCachedFile(key string, file File) {
 	if file.ID == "" {
 		return
 	}
@@ -574,7 +594,7 @@ func (c *Client) putCachedFile(file File) {
 	if c.metadataCacheTTL <= 0 {
 		return
 	}
-	c.fileCache[file.ID] = cachedFile{
+	c.fileCache[key] = cachedFile{
 		file:      cloneFile(file),
 		expiresAt: time.Now().Add(c.metadataCacheTTL),
 	}
@@ -644,6 +664,10 @@ func (c *Client) putCachedList(key string, list FileList) {
 
 func lookupCacheKey(parentID, name, itemType string) string {
 	return parentID + "\x00" + itemType + "\x00" + name
+}
+
+func fileCacheKey(id, resourceKey string) string {
+	return id + "\x00" + resourceKey
 }
 
 func listCacheKey(opts ListOptions, pageSize int, limit int) string {
@@ -765,4 +789,11 @@ func cloneRequest(req *http.Request) *http.Request {
 	cloned := req.Clone(req.Context())
 	cloned.Header = req.Header.Clone()
 	return cloned
+}
+
+func setResourceKeyHeader(req *http.Request, id string, resourceKey string) {
+	if id == "" || resourceKey == "" {
+		return
+	}
+	req.Header.Set("X-Goog-Drive-Resource-Keys", id+"/"+resourceKey)
 }

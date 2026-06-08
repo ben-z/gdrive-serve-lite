@@ -99,6 +99,7 @@ Fetch file metadata:
 
 ```sh
 curl 'http://127.0.0.1:8765/api/file?id=DRIVE_FILE_ID'
+curl 'http://127.0.0.1:8765/api/file?id=DRIVE_FILE_ID&resourceKey=RESOURCE_KEY'
 ```
 
 Fetch supported export formats for a Google Workspace file:
@@ -118,9 +119,12 @@ Download or stream a file:
 
 ```text
 http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4
+http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4?resourceKey=RESOURCE_KEY
 ```
 
 `GET /file/...` forwards directly to Drive `alt=media` and preserves `Range`, so media seeking is a single upstream Drive request. `HEAD /file/...` uses one metadata request and returns length/type headers without streaming file bytes.
+
+If Drive returns a `resourceKey` or `shortcutDetails.targetResourceKey` in metadata, path-based reads automatically pass it through on the upstream Drive request. ID-based endpoints accept `resourceKey=...` explicitly.
 
 Export a Google Docs/Sheets/Slides file:
 
