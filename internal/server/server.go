@@ -423,13 +423,13 @@ func (s *Server) streamExport(w http.ResponseWriter, r *http.Request, file drive
 	copyHeader(w.Header(), res.Header, "Content-Length")
 	copyHeader(w.Header(), res.Header, "ETag")
 	copyHeader(w.Header(), res.Header, "Last-Modified")
-	if w.Header().Get("Content-Type") == "" {
+	if res.StatusCode < http.StatusBadRequest && w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", format.MIMEType)
 	}
 	if name == "" {
 		name = file.Name
 	}
-	if name != "" && w.Header().Get("Content-Disposition") == "" {
+	if res.StatusCode < http.StatusBadRequest && name != "" && w.Header().Get("Content-Disposition") == "" {
 		w.Header().Set("Content-Disposition", contentDisposition(exportName(name, format)))
 	}
 	w.WriteHeader(res.StatusCode)

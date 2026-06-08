@@ -93,3 +93,30 @@ func TestExportUsesFilesExportEndpoint(t *testing.T) {
 		t.Fatalf("body = %q", body)
 	}
 }
+
+func TestExportPassesThroughDriveError(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusTooManyRequests, `{"error":"quota"}`), nil
+		}),
+	})
+
+	resp, err := client.Export(context.Background(), "doc-1", "application/pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("StatusCode = %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("Content-Type = %q", resp.Header.Get("Content-Type"))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != `{"error":"quota"}` {
+		t.Fatalf("body = %q", body)
+	}
+}

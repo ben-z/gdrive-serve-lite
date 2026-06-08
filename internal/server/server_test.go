@@ -762,6 +762,53 @@ func TestExportEndpointDefaultsToRcloneLikeFormat(t *testing.T) {
 	}
 }
 
+func TestExportEndpointPassesThroughDriveError(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return jsonResponse(http.StatusOK, `{
+				"id":"doc-1",
+				"name":"Notes",
+				"mimeType":"application/vnd.google-apps.document"
+			}`), nil
+		case 2:
+			if req.URL.Path != "/drive/v3/files/doc-1/export" {
+				t.Fatalf("export path = %q", req.URL.Path)
+			}
+			resp := jsonResponse(http.StatusForbidden, `{"error":"cannotExport"}`)
+			resp.Header.Set("ETag", `"drive-error-etag"`)
+			return resp, nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/export/doc-1/Notes?format=pdf", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("ETag") != `"drive-error-etag"` {
+		t.Fatalf("ETag = %q", rec.Header().Get("ETag"))
+	}
+	if rec.Header().Get("Content-Disposition") != "" {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+	if rec.Body.String() != `{"error":"cannotExport"}` {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
 func TestExportEndpointForwardsResourceKey(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {
