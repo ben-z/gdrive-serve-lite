@@ -411,6 +411,47 @@ func TestPathEndpointStreamsResolvedFile(t *testing.T) {
 	}
 }
 
+func TestPathEndpointCachesResolutionButNotMedia(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}]}`), nil
+		case 3:
+			if req.URL.Query().Get("alt") != "media" {
+				t.Fatalf("first media alt = %q", req.URL.Query().Get("alt"))
+			}
+			return textResponse(http.StatusOK, "first"), nil
+		case 4:
+			if req.URL.Query().Get("alt") != "media" {
+				t.Fatalf("second media alt = %q", req.URL.Query().Get("alt"))
+			}
+			return textResponse(http.StatusOK, "second"), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	for _, wantBody := range []string{"first", "second"} {
+		req := httptest.NewRequest(http.MethodGet, "/path/folder/video.mp4", nil)
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+		}
+		if rec.Body.String() != wantBody {
+			t.Fatalf("body = %q, want %q", rec.Body.String(), wantBody)
+		}
+	}
+	if calls != 4 {
+		t.Fatalf("calls = %d, want 4", calls)
+	}
+}
+
 func TestPathEndpointExportsWorkspaceFile(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {

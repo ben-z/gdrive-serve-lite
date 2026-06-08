@@ -17,6 +17,8 @@ import (
 
 const FolderMIME = "application/vnd.google-apps.folder"
 
+const DefaultMetadataCacheTTL = 5 * time.Minute
+
 var ErrNotFound = errors.New("not found")
 
 type AmbiguousPathError struct {
@@ -30,10 +32,24 @@ func (e *AmbiguousPathError) Error() string {
 }
 
 type Client struct {
-	cfg        config.Config
-	token      config.OAuthToken
-	httpClient *http.Client
-	mu         sync.Mutex
+	cfg              config.Config
+	token            config.OAuthToken
+	httpClient       *http.Client
+	mu               sync.Mutex
+	metadataCacheTTL time.Duration
+	cacheMu          sync.RWMutex
+	fileCache        map[string]cachedFile
+	lookupCache      map[string]cachedFiles
+}
+
+type cachedFile struct {
+	file      File
+	expiresAt time.Time
+}
+
+type cachedFiles struct {
+	files     []File
+	expiresAt time.Time
 }
 
 type APIError struct {
@@ -100,10 +116,28 @@ func NewClientWithHTTPClient(cfg config.Config, httpClient *http.Client) *Client
 		httpClient = http.DefaultClient
 	}
 	return &Client{
-		cfg:        cfg,
-		token:      cfg.Token,
-		httpClient: httpClient,
+		cfg:              cfg,
+		token:            cfg.Token,
+		httpClient:       httpClient,
+		metadataCacheTTL: DefaultMetadataCacheTTL,
+		fileCache:        map[string]cachedFile{},
+		lookupCache:      map[string]cachedFiles{},
 	}
+}
+
+func (c *Client) SetMetadataCacheTTL(ttl time.Duration) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	c.metadataCacheTTL = ttl
+	c.fileCache = map[string]cachedFile{}
+	c.lookupCache = map[string]cachedFiles{}
+}
+
+func (c *Client) ClearMetadataCache() {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	c.fileCache = map[string]cachedFile{}
+	c.lookupCache = map[string]cachedFiles{}
 }
 
 func (c *Client) ListChildren(ctx context.Context, opts ListOptions) (*FileList, error) {
@@ -261,6 +295,9 @@ func (c *Client) GetFile(ctx context.Context, id string) (*File, error) {
 	if id == "" {
 		return nil, errors.New("file ID is required")
 	}
+	if cached, ok := c.cachedFile(id); ok {
+		return &cached, nil
+	}
 	values := c.baseGetValues()
 	values.Set("fields", "id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,exportLinks,shortcutDetails")
 	var out File
@@ -269,6 +306,7 @@ func (c *Client) GetFile(ctx context.Context, id string) (*File, error) {
 		return nil, err
 	}
 	annotateFileExports(&out)
+	c.putCachedFile(out)
 	return &out, nil
 }
 
@@ -312,6 +350,10 @@ func (c *Client) findItemsByName(ctx context.Context, parentID, name string, ite
 	if err != nil {
 		return nil, err
 	}
+	cacheKey := lookupCacheKey(parentID, name, itemType)
+	if cached, ok := c.cachedLookup(cacheKey); ok {
+		return cached, nil
+	}
 	q := "trashed=false and " + quote(parentID) + " in parents and name = " + quote(name)
 	switch itemType {
 	case "any":
@@ -329,6 +371,9 @@ func (c *Client) findItemsByName(ctx context.Context, parentID, name string, ite
 		return nil, err
 	}
 	annotateListExports(&out)
+	if len(out.Files) == 1 {
+		c.putCachedLookup(cacheKey, out.Files)
+	}
 	return out.Files, nil
 }
 
@@ -466,6 +511,108 @@ func (c *Client) accessToken(ctx context.Context, force bool) (string, error) {
 		c.token.Expiry = time.Now().Add(time.Duration(refreshed.ExpiresIn) * time.Second)
 	}
 	return c.token.AccessToken, nil
+}
+
+func (c *Client) cachedFile(id string) (File, bool) {
+	c.cacheMu.RLock()
+	ttl := c.metadataCacheTTL
+	entry, ok := c.fileCache[id]
+	c.cacheMu.RUnlock()
+	if ttl <= 0 || !ok {
+		return File{}, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		c.cacheMu.Lock()
+		if current, ok := c.fileCache[id]; ok && time.Now().After(current.expiresAt) {
+			delete(c.fileCache, id)
+		}
+		c.cacheMu.Unlock()
+		return File{}, false
+	}
+	return cloneFile(entry.file), true
+}
+
+func (c *Client) putCachedFile(file File) {
+	if file.ID == "" {
+		return
+	}
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	if c.metadataCacheTTL <= 0 {
+		return
+	}
+	c.fileCache[file.ID] = cachedFile{
+		file:      cloneFile(file),
+		expiresAt: time.Now().Add(c.metadataCacheTTL),
+	}
+}
+
+func (c *Client) cachedLookup(key string) ([]File, bool) {
+	c.cacheMu.RLock()
+	ttl := c.metadataCacheTTL
+	entry, ok := c.lookupCache[key]
+	c.cacheMu.RUnlock()
+	if ttl <= 0 || !ok {
+		return nil, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		c.cacheMu.Lock()
+		if current, ok := c.lookupCache[key]; ok && time.Now().After(current.expiresAt) {
+			delete(c.lookupCache, key)
+		}
+		c.cacheMu.Unlock()
+		return nil, false
+	}
+	return cloneFiles(entry.files), true
+}
+
+func (c *Client) putCachedLookup(key string, files []File) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	if c.metadataCacheTTL <= 0 {
+		return
+	}
+	c.lookupCache[key] = cachedFiles{
+		files:     cloneFiles(files),
+		expiresAt: time.Now().Add(c.metadataCacheTTL),
+	}
+}
+
+func lookupCacheKey(parentID, name, itemType string) string {
+	return parentID + "\x00" + itemType + "\x00" + name
+}
+
+func cloneFiles(files []File) []File {
+	if len(files) == 0 {
+		return nil
+	}
+	cloned := make([]File, len(files))
+	for i := range files {
+		cloned[i] = cloneFile(files[i])
+	}
+	return cloned
+}
+
+func cloneFile(file File) File {
+	if file.ExportLinks != nil {
+		links := make(map[string]string, len(file.ExportLinks))
+		for key, value := range file.ExportLinks {
+			links[key] = value
+		}
+		file.ExportLinks = links
+	}
+	if file.ExportFormats != nil {
+		file.ExportFormats = append([]ExportFormat(nil), file.ExportFormats...)
+	}
+	if file.DefaultExport != nil {
+		format := *file.DefaultExport
+		file.DefaultExport = &format
+	}
+	if file.ShortcutDetails != nil {
+		details := *file.ShortcutDetails
+		file.ShortcutDetails = &details
+	}
+	return file
 }
 
 func quote(s string) string {

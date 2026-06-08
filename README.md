@@ -29,6 +29,7 @@ go build ./cmd/gdrive-serve-lite
   --remote drive-ro \
   --config ~/.config/rclone/rclone.conf \
   --root-folder-id DRIVE_FOLDER_ID \
+  --metadata-cache-ttl 5m \
   --addr 127.0.0.1:8765
 ```
 
@@ -41,6 +42,8 @@ RCLONE_CONFIG_PASS='<rclone-config-password>' ./gdrive-serve-lite --remote drive
 ```
 
 The server decrypts rclone's `RCLONE_ENCRYPT_V0` config format directly. It only reads the rclone config; refreshed access tokens are kept in memory and are not written back.
+
+The `--metadata-cache-ttl` flag controls a small positive lookup cache for file metadata and path segment resolution. The default is `5m`, which keeps repeated `/path/...`, `/export/...`, and `HEAD` requests fast without caching directory listing pages. Set it to `0` to disable metadata caching.
 
 ## Run without rclone
 

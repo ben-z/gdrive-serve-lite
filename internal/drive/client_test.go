@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"gdrive-serve-lite/internal/config"
 )
@@ -237,6 +238,95 @@ func TestResolveItemPathAmbiguous(t *testing.T) {
 	}
 	if ambiguous.Segment != "duplicate" || ambiguous.Parent != "root-folder" || ambiguous.Count != 2 {
 		t.Fatalf("ambiguous = %+v", ambiguous)
+	}
+}
+
+func TestResolveItemPathUsesMetadataCache(t *testing.T) {
+	var calls int
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			switch calls {
+			case 1:
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"Clips","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+			case 2:
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}]}`), nil
+			default:
+				t.Fatalf("unexpected request %d", calls)
+				return nil, nil
+			}
+		}),
+	})
+
+	for range 2 {
+		item, err := client.ResolveItemPath(context.Background(), "/Clips/video.mp4", "root-folder", "file")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if item.File.ID != "file-1" {
+			t.Fatalf("item = %+v", item)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestMetadataCacheCanBeDisabled(t *testing.T) {
+	var calls int
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if calls%2 == 1 {
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"Clips","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}]}`), nil
+		}),
+	})
+	client.SetMetadataCacheTTL(0)
+
+	for range 2 {
+		if _, err := client.ResolveItemPath(context.Background(), "/Clips/video.mp4", "root-folder", "file"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 4 {
+		t.Fatalf("calls = %d, want 4", calls)
+	}
+}
+
+func TestGetFileUsesMetadataCacheUntilExpiry(t *testing.T) {
+	var calls int
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return jsonResponse(http.StatusOK, `{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}`), nil
+		}),
+	})
+
+	for range 2 {
+		file, err := client.GetFile(context.Background(), "file-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if file.Name != "video.mp4" {
+			t.Fatalf("file = %+v", file)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("calls before expiry = %d, want 1", calls)
+	}
+
+	client.SetMetadataCacheTTL(time.Millisecond)
+	if _, err := client.GetFile(context.Background(), "file-1"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if _, err := client.GetFile(context.Background(), "file-1"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("calls after expiry = %d, want 3", calls)
 	}
 }
 
