@@ -30,6 +30,7 @@ go build ./cmd/gdrive-serve-lite
   --config ~/.config/rclone/rclone.conf \
   --metadata-cache-ttl 5m \
   --list-cache-ttl 30s \
+  --drive-response-header-timeout 30s \
   --user test-user \
   --pass '<http-password>' \
   --addr 127.0.0.1:8765
@@ -50,6 +51,8 @@ The server decrypts rclone's `RCLONE_ENCRYPT_V0` config format directly. It only
 The `--metadata-cache-ttl` flag controls a small positive lookup cache for file metadata and path segment resolution. The default is `5m`, which keeps repeated `/path/...`, `/export/...`, and `HEAD` requests fast.
 
 The `--list-cache-ttl` flag controls an exact-query cache for successful directory/list responses. The default is `30s`. The cache key includes folder ID, page token, type, order, page size, and limit, so different pages and filters do not collide. Set either cache TTL to `0` to disable it.
+
+The `--drive-response-header-timeout` flag bounds how long the server waits for Google API response headers. The default is `30s`; it does not cap the duration of a long media response body after Drive starts sending it.
 
 Use `--user` and `--pass` together to require HTTP Basic Auth on every endpoint. The default is no local HTTP auth, matching the usual local-only workflow.
 
