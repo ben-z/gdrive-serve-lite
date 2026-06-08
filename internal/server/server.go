@@ -373,12 +373,7 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 
 func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p string, folder folderRef) {
 	if r.Method == http.MethodHead {
-		if wantsJSON(r) {
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		} else {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		}
-		w.WriteHeader(http.StatusOK)
+		writeFolderHead(w, r)
 		return
 	}
 	list, err := s.drive.ListChildren(r.Context(), drive.ListOptions{
@@ -441,7 +436,7 @@ func (s *Server) streamExport(w http.ResponseWriter, r *http.Request, file drive
 }
 
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -451,6 +446,10 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := browsePath(r)
+	if r.Method == http.MethodHead {
+		writeFolderHead(w, r)
+		return
+	}
 	list, err := s.drive.ListChildren(r.Context(), drive.ListOptions{
 		FolderID:    folder.ID,
 		ResourceKey: folder.ResourceKey,
@@ -697,6 +696,15 @@ func writeExportHead(w http.ResponseWriter, r *http.Request, file drive.File, fo
 	}
 	if name != "" {
 		w.Header().Set("Content-Disposition", contentDisposition(exportName(name, format)))
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func writeFolderHead(w http.ResponseWriter, r *http.Request) {
+	if wantsJSON(r) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	} else {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	}
 	w.WriteHeader(http.StatusOK)
 }
