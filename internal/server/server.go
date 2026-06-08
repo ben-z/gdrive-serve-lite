@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,12 @@ import (
 type Server struct {
 	drive        *drive.Client
 	rootFolderID string
+	auth         *basicAuth
+}
+
+type basicAuth struct {
+	username string
+	password string
 }
 
 type ListResponse struct {
@@ -42,6 +49,14 @@ func New(client *drive.Client, rootFolderID string) *Server {
 	return &Server{drive: client, rootFolderID: rootFolderID}
 }
 
+func (s *Server) SetBasicAuth(username, password string) {
+	if username == "" && password == "" {
+		s.auth = nil
+		return
+	}
+	s.auth = &basicAuth{username: username, password: password}
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -55,7 +70,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/browse/", s.handleBrowse)
 	mux.HandleFunc("/browse", s.handleBrowse)
 	mux.HandleFunc("/", s.handleRoot)
-	return mux
+	if s.auth == nil {
+		return mux
+	}
+	return s.authMiddleware(mux)
+}
+
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || subtle.ConstantTimeCompare([]byte(username), []byte(s.auth.username)) != 1 ||
+			subtle.ConstantTimeCompare([]byte(password), []byte(s.auth.password)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="gdrive-serve-lite"`)
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

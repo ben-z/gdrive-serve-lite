@@ -30,6 +30,8 @@ go build ./cmd/gdrive-serve-lite
   --config ~/.config/rclone/rclone.conf \
   --root-folder-id 1-jJX3Mj7V6Afs-Elmr3g6AgwFo5KLgCM \
   --metadata-cache-ttl 5m \
+  --user ben \
+  --pass 'local-password' \
   --addr 127.0.0.1:8765
 ```
 
@@ -44,6 +46,8 @@ RCLONE_CONFIG_PASS='your config password' ./gdrive-serve-lite --remote gdrive-ro
 The server decrypts rclone's `RCLONE_ENCRYPT_V0` config format directly. It only reads the rclone config; refreshed access tokens are kept in memory and are not written back.
 
 The `--metadata-cache-ttl` flag controls a small positive lookup cache for file metadata and path segment resolution. The default is `5m`, which keeps repeated `/path/...`, `/export/...`, and `HEAD` requests fast without caching directory listing pages. Set it to `0` to disable metadata caching.
+
+Use `--user` and `--pass` together to require HTTP Basic Auth on every endpoint. The default is no local HTTP auth, matching the usual local-only workflow.
 
 ## Run without rclone
 
@@ -136,6 +140,5 @@ http://127.0.0.1:8765/path/docs/Meeting%20Notes?format=pdf
 - read-only
 - Google Drive only
 - no directory cache yet
-- no auth on the local HTTP server yet
 - duplicate names make path resolution ambiguous; use `folderId` or file ID directly when that happens
 - rclone config password input is environment-only for now; no interactive prompt

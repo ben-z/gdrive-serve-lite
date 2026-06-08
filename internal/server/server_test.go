@@ -86,6 +86,47 @@ func TestAPIListDefaultsToRootFolder(t *testing.T) {
 	}
 }
 
+func TestBasicAuthRejectsUnauthorizedRequests(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		t.Fatal("Drive transport should not be reached")
+		return nil, nil
+	})
+	app.SetBasicAuth("ben", "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/list", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("WWW-Authenticate") == "" {
+		t.Fatal("missing WWW-Authenticate header")
+	}
+	if !strings.Contains(rec.Body.String(), "unauthorized") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestBasicAuthAllowsAuthorizedRequests(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
+	})
+	app.SetBasicAuth("ben", "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/list", nil)
+	req.SetBasicAuth("ben", "secret")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
 func TestFileEndpointStreamsMediaInOneDriveRequest(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {
