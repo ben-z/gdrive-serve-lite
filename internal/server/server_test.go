@@ -127,6 +127,166 @@ func TestBasicAuthAllowsAuthorizedRequests(t *testing.T) {
 	}
 }
 
+func TestRootPathListsConfiguredRoot(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		query := req.URL.Query().Get("q")
+		if !strings.Contains(query, "'root-folder' in parents") {
+			t.Fatalf("query = %q", query)
+		}
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "folder/") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestRootCompatibleFolderPathListsFolder(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "'root-folder' in parents") ||
+				!strings.Contains(query, "name = 'folder'") {
+				t.Fatalf("resolve query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "'folder-1' in parents") {
+				t.Fatalf("list query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}]}`), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/folder", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if !strings.Contains(rec.Body.String(), "video.mp4") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestRootCompatibleFilePathStreamsMedia(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "'folder-1' in parents") ||
+				!strings.Contains(query, "name = 'video.mp4'") {
+				t.Fatalf("file query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}]}`), nil
+		case 3:
+			if req.URL.Path != "/drive/v3/files/file-1" {
+				t.Fatalf("path = %q", req.URL.Path)
+			}
+			if req.URL.Query().Get("alt") != "media" {
+				t.Fatalf("alt = %q", req.URL.Query().Get("alt"))
+			}
+			if req.Header.Get("Range") != "bytes=1-3" {
+				t.Fatalf("Range = %q", req.Header.Get("Range"))
+			}
+			resp := textResponse(http.StatusPartialContent, "bcd")
+			resp.Header.Set("Content-Type", "video/mp4")
+			resp.Header.Set("Content-Range", "bytes 1-3/10")
+			return resp, nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/folder/video.mp4", nil)
+	req.Header.Set("Range", "bytes=1-3")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+	if rec.Body.String() != "bcd" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if rec.Header().Get("Content-Range") != "bytes 1-3/10" {
+		t.Fatalf("Content-Range = %q", rec.Header().Get("Content-Range"))
+	}
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), "video.mp4") {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+}
+
+func TestRootCompatibleWorkspacePathExports(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"docs","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			return jsonResponse(http.StatusOK, `{
+				"files":[{
+					"id":"doc-1",
+					"name":"Notes",
+					"mimeType":"application/vnd.google-apps.document",
+					"exportLinks":{"application/pdf":"https://example.invalid/pdf"}
+				}]
+			}`), nil
+		case 3:
+			if req.URL.Path != "/drive/v3/files/doc-1/export" {
+				t.Fatalf("path = %q", req.URL.Path)
+			}
+			if req.URL.Query().Get("mimeType") != "application/pdf" {
+				t.Fatalf("mimeType = %q", req.URL.Query().Get("mimeType"))
+			}
+			return textResponse(http.StatusOK, "%PDF"), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/docs/Notes?format=pdf", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+	if rec.Body.String() != "%PDF" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), "Notes.pdf") {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+}
+
 func TestFileEndpointStreamsMediaInOneDriveRequest(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {

@@ -106,6 +106,7 @@ curl 'http://127.0.0.1:8765/api/export-formats?id=GOOGLE_DOC_FILE_ID'
 Browse in a browser:
 
 ```text
+http://127.0.0.1:8765/
 http://127.0.0.1:8765/browse/
 ```
 
@@ -129,11 +130,13 @@ If no `format` or `mimeType` is provided, the server defaults to rclone-like exp
 You can also stream by path:
 
 ```text
+http://127.0.0.1:8765/Videos/Clips/name.mp4
 http://127.0.0.1:8765/path/Videos/Clips/name.mp4
+http://127.0.0.1:8765/Documents/Meeting%20Notes?format=pdf
 http://127.0.0.1:8765/path/Documents/Meeting%20Notes?format=pdf
 ```
 
-`/path/...` resolves each path segment first, then streams or exports the resolved file. It is convenient, but `/file/DRIVE_FILE_ID/...` is the lower-latency path for blob files when you already have the file ID from `/api/list`.
+Plain root-relative paths are the rclone-like compatibility route: folders render an HTML listing, blob files stream from Drive, and Google Workspace files export when needed. `/path/...` is the same path-based file read behavior under an explicit prefix. Path reads resolve each segment first, so `/file/DRIVE_FILE_ID/...` is the lower-latency path for blob files when you already have the file ID from `/api/list`.
 
 ## Current limits
 
@@ -141,4 +144,5 @@ http://127.0.0.1:8765/path/Documents/Meeting%20Notes?format=pdf
 - Google Drive only
 - no directory cache yet
 - duplicate names make path resolution ambiguous; use `folderId` or file ID directly when that happens
+- root-relative paths under reserved prefixes such as `/api`, `/file`, `/path`, `/export`, `/browse`, and `/healthz` are treated as server endpoints
 - rclone config password input is environment-only for now; no interactive prompt

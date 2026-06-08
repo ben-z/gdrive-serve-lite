@@ -128,7 +128,7 @@ That rclone-generated encrypted fixture is covered by unit tests.
 - basic HTML browser
 - file streaming with Range forwarding
 - metadata endpoint separated from media streaming, so GET reads stay one upstream request
-- optional path-based file streaming for convenience, with file-ID streaming kept as the fast path
+- rclone-like root-relative folder and file paths, with file-ID streaming kept as the fastest path
 - Workspace document export through Drive's `files.export`, kept separate from blob media reads
 - positive metadata/path lookup cache with TTL; listing pages stay uncached so pagination remains Drive-native
 - optional HTTP Basic Auth with `--user` and `--pass`
@@ -156,6 +156,7 @@ GET /api/resolve?path=/a/b/c&type=folder|file|any
 GET /file/{fileId}/{optional-name}
 GET /export/{fileId}/{optional-name}?format=pdf
 GET /path/{path-to-file}
+GET /{path-to-file-or-folder}
 GET /browse/{path}
 GET /healthz
 ```

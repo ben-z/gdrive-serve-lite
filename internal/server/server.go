@@ -94,11 +94,25 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	http.Redirect(w, r, "/browse/", http.StatusFound)
+	p := compatiblePath(r)
+	if p == "/" {
+		s.serveFolderPath(w, r, p, s.rootFolderID)
+		return
+	}
+	item, err := s.drive.ResolveItemPath(r.Context(), p, s.rootFolderID, "any")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if item.File.MIMEType == drive.FolderMIME {
+		s.serveFolderPath(w, r, item.Path, item.File.ID)
+		return
+	}
+	s.serveResolvedFile(w, r, item.File, item.File.Name)
 }
 
 func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
@@ -284,29 +298,33 @@ func (s *Server) handlePathFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.serveResolvedFile(w, r, item.File, item.File.Name)
+}
+
+func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file drive.File, name string) {
 	if r.Method == http.MethodHead {
-		if drive.IsWorkspaceFile(item.File) || exportRequested(r) {
-			format, err := exportFormatFromRequest(r, item.File)
+		if drive.IsWorkspaceFile(file) || exportRequested(r) {
+			format, err := exportFormatFromRequest(r, file)
 			if err != nil {
 				writeError(w, err)
 				return
 			}
-			writeExportHead(w, item.File, format, item.File.Name)
+			writeExportHead(w, file, format, name)
 			return
 		}
-		writeFileHead(w, item.File, item.File.Name)
+		writeFileHead(w, file, name)
 		return
 	}
-	if drive.IsWorkspaceFile(item.File) || exportRequested(r) {
-		format, err := exportFormatFromRequest(r, item.File)
+	if drive.IsWorkspaceFile(file) || exportRequested(r) {
+		format, err := exportFormatFromRequest(r, file)
 		if err != nil {
 			writeError(w, err)
 			return
 		}
-		s.streamExport(w, r, item.File, format, item.File.Name)
+		s.streamExport(w, r, file, format, name)
 		return
 	}
-	res, err := s.drive.Download(r.Context(), r.Method, item.File.ID, r.Header.Get("Range"))
+	res, err := s.drive.Download(r.Context(), r.Method, file.ID, r.Header.Get("Range"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -319,11 +337,32 @@ func (s *Server) handlePathFile(w http.ResponseWriter, r *http.Request) {
 	copyHeader(w.Header(), res.Header, "Accept-Ranges")
 	copyHeader(w.Header(), res.Header, "ETag")
 	copyHeader(w.Header(), res.Header, "Last-Modified")
-	if item.File.Name != "" && w.Header().Get("Content-Disposition") == "" {
-		w.Header().Set("Content-Disposition", contentDisposition(item.File.Name))
+	if name != "" && w.Header().Get("Content-Disposition") == "" {
+		w.Header().Set("Content-Disposition", contentDisposition(name))
 	}
 	w.WriteHeader(res.StatusCode)
 	_, _ = io.Copy(w, res.Body)
+}
+
+func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p string, folderID string) {
+	if r.Method == http.MethodHead {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	list, err := s.drive.ListChildren(r.Context(), drive.ListOptions{
+		FolderID:  folderID,
+		PageSize:  intParam(r, "pageSize", 1000),
+		Limit:     intParam(r, "limit", 0),
+		PageToken: r.URL.Query().Get("pageToken"),
+		OrderBy:   r.URL.Query().Get("orderBy"),
+		Type:      r.URL.Query().Get("type"),
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.renderBrowse(w, r, p, folderID, list)
 }
 
 func (s *Server) handleFileHead(w http.ResponseWriter, r *http.Request, fileID string, name string) {
@@ -468,6 +507,17 @@ func pathRest(r *http.Request, prefix string) string {
 		p = r.URL.Path
 	}
 	return strings.TrimPrefix(p, prefix)
+}
+
+func compatiblePath(r *http.Request) string {
+	p := r.URL.EscapedPath()
+	if p == "" {
+		p = r.URL.Path
+	}
+	if p == "" || p == "/" {
+		return "/"
+	}
+	return path.Clean("/" + strings.TrimPrefix(p, "/"))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
