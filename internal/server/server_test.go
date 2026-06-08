@@ -59,6 +59,33 @@ func TestAPIListAggregatesPagesAndReturnsNextURL(t *testing.T) {
 	}
 }
 
+func TestAPIListDefaultsToRootFolder(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		query := req.URL.Query().Get("q")
+		if !strings.Contains(query, "'root-folder' in parents") {
+			t.Fatalf("query = %q", query)
+		}
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/list?type=files&pageSize=1000&limit=1000", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.FolderID != "root-folder" {
+		t.Fatalf("FolderID = %q", body.FolderID)
+	}
+	if body.Count != 1 {
+		t.Fatalf("Count = %d", body.Count)
+	}
+}
+
 func TestFileEndpointStreamsMediaInOneDriveRequest(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {

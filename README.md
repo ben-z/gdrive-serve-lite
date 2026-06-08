@@ -62,6 +62,12 @@ List a folder by ID:
 curl 'http://127.0.0.1:8765/api/list?folderId=1-jJX3Mj7V6Afs-Elmr3g6AgwFo5KLgCM&type=files&pageSize=1000&limit=1000'
 ```
 
+If `folderId` and `path` are omitted, `/api/list` lists the configured root folder:
+
+```sh
+curl 'http://127.0.0.1:8765/api/list?type=files&pageSize=1000&limit=1000'
+```
+
 `pageSize` is the requested Drive page size. `limit` is the maximum number of entries to return to the caller. If Drive returns a short partial page, the server follows `nextPageToken` until it has `limit` entries or reaches the end. Responses include `nextPageToken` and a ready-to-call `next` URL when more entries are available.
 
 Resolve a folder path:

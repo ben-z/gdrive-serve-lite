@@ -369,7 +369,7 @@ func (s *Server) folderIDFromRequest(r *http.Request) (string, error) {
 	if strings.HasPrefix(r.URL.Path, "/browse") {
 		return s.drive.ResolvePath(r.Context(), browsePath(r), s.rootFolderID)
 	}
-	return "", errors.New("folderId or path is required")
+	return s.rootFolderID, nil
 }
 
 func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p string, folderID string, list *drive.FileList) {
