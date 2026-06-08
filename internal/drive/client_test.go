@@ -415,6 +415,82 @@ func TestResolveItemPathFile(t *testing.T) {
 	}
 }
 
+func TestResolveItemPathCarriesParentResourceKey(t *testing.T) {
+	var calls int
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			switch calls {
+			case 1:
+				if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "" {
+					t.Fatalf("first resource key header = %q", got)
+				}
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"Shared","mimeType":"application/vnd.google-apps.folder","resourceKey":"folder-key-1"}]}`), nil
+			case 2:
+				if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "folder-1/folder-key-1" {
+					t.Fatalf("second resource key header = %q", got)
+				}
+				query := req.URL.Query().Get("q")
+				if !strings.Contains(query, "'folder-1' in parents") ||
+					!strings.Contains(query, "name = 'video.mp4'") {
+					t.Fatalf("query = %q", query)
+				}
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}]}`), nil
+			default:
+				t.Fatalf("unexpected request %d", calls)
+				return nil, nil
+			}
+		}),
+	})
+
+	item, err := client.ResolveItemPath(context.Background(), "/Shared/video.mp4", "root-folder", "file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if item.File.ID != "file-1" || item.ParentID != "folder-1" {
+		t.Fatalf("item = %+v", item)
+	}
+}
+
+func TestResolveItemPathCarriesShortcutParentResourceKey(t *testing.T) {
+	var calls int
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			switch calls {
+			case 1:
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"shortcut-1","name":"Shared shortcut","mimeType":"application/vnd.google-apps.shortcut","shortcutDetails":{"targetId":"folder-1","targetMimeType":"application/vnd.google-apps.folder","targetResourceKey":"target-folder-key"}}]}`), nil
+			case 2:
+				if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "folder-1/target-folder-key" {
+					t.Fatalf("second resource key header = %q", got)
+				}
+				query := req.URL.Query().Get("q")
+				if !strings.Contains(query, "'folder-1' in parents") {
+					t.Fatalf("query = %q", query)
+				}
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}]}`), nil
+			default:
+				t.Fatalf("unexpected request %d", calls)
+				return nil, nil
+			}
+		}),
+	})
+
+	item, err := client.ResolveItemPath(context.Background(), "/Shared%20shortcut/video.mp4", "root-folder", "file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if item.File.ID != "file-1" || item.ParentID != "folder-1" {
+		t.Fatalf("item = %+v", item)
+	}
+}
+
 func TestResolveItemPathAmbiguous(t *testing.T) {
 	client := NewClientWithHTTPClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

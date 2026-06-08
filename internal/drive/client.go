@@ -284,6 +284,7 @@ func (c *Client) ResolveItemPath(ctx context.Context, p string, rootFolderID str
 	}
 	parts := strings.Split(strings.Trim(p, "/"), "/")
 	parent := rootFolderID
+	parentResourceKey := ""
 	resolvedParent := ""
 	cleanParts := make([]string, 0, len(parts))
 	var resolved File
@@ -300,7 +301,7 @@ func (c *Client) ResolveItemPath(ctx context.Context, p string, rootFolderID str
 		if i == len(parts)-1 {
 			leafType = itemType
 		}
-		matches, err := c.findItemsByName(ctx, parent, segment, leafType)
+		matches, err := c.findItemsByName(ctx, parent, parentResourceKey, segment, leafType)
 		if err != nil {
 			return nil, err
 		}
@@ -310,7 +311,8 @@ func (c *Client) ResolveItemPath(ctx context.Context, p string, rootFolderID str
 		case 1:
 			resolved = matches[0]
 			resolvedParent = parent
-			parent = matches[0].ID
+			parent = readableFileID(matches[0])
+			parentResourceKey = readableResourceKey(matches[0])
 		default:
 			return nil, &AmbiguousPathError{Segment: segment, Parent: parent, Count: len(matches)}
 		}
@@ -409,12 +411,12 @@ func (c *Client) ExportWithResourceKey(ctx context.Context, id string, mimeType 
 	return c.do(req)
 }
 
-func (c *Client) findItemsByName(ctx context.Context, parentID, name string, itemType string) ([]File, error) {
+func (c *Client) findItemsByName(ctx context.Context, parentID, parentResourceKey, name string, itemType string) ([]File, error) {
 	itemType, err := normalizeItemType(itemType)
 	if err != nil {
 		return nil, err
 	}
-	cacheKey := lookupCacheKey(parentID, name, itemType)
+	cacheKey := lookupCacheKey(parentID, parentResourceKey, name, itemType)
 	if cached, ok := c.cachedLookup(cacheKey); ok {
 		return cached, nil
 	}
@@ -422,23 +424,24 @@ func (c *Client) findItemsByName(ctx context.Context, parentID, name string, ite
 	switch itemType {
 	case "any":
 	case "file":
-		q += " and mimeType != " + quote(FolderMIME)
+		q += " and (mimeType != " + quote(FolderMIME) + " and (mimeType != " + quote(ShortcutMIME) + " or shortcutDetails.targetMimeType != " + quote(FolderMIME) + "))"
 	case "folder":
-		q += " and mimeType = " + quote(FolderMIME)
+		q += " and (mimeType = " + quote(FolderMIME) + " or (mimeType = " + quote(ShortcutMIME) + " and shortcutDetails.targetMimeType = " + quote(FolderMIME) + "))"
 	}
 	values := c.baseListValues()
 	values.Set("q", q)
 	values.Set("fields", "files(id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,exportLinks,shortcutDetails)")
 	values.Set("pageSize", "2")
 	var out FileList
-	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), &out); err != nil {
+	if err := c.getJSONWithResourceKey(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), parentID, parentResourceKey, &out); err != nil {
 		return nil, err
 	}
 	annotateListExports(&out)
-	if len(out.Files) == 1 {
-		c.putCachedLookup(cacheKey, out.Files)
+	files := filterResolvedItems(out.Files, itemType)
+	if len(files) == 1 {
+		c.putCachedLookup(cacheKey, files)
 	}
-	return out.Files, nil
+	return files, nil
 }
 
 func (c *Client) baseListValues() url.Values {
@@ -678,8 +681,8 @@ func (c *Client) putCachedList(key string, list FileList) {
 	}
 }
 
-func lookupCacheKey(parentID, name, itemType string) string {
-	return parentID + "\x00" + itemType + "\x00" + name
+func lookupCacheKey(parentID, parentResourceKey, name, itemType string) string {
+	return parentID + "\x00" + parentResourceKey + "\x00" + itemType + "\x00" + name
 }
 
 func fileCacheKey(id, resourceKey string) string {
@@ -782,6 +785,27 @@ func typeLabel(itemType string) string {
 	}
 }
 
+func filterResolvedItems(files []File, itemType string) []File {
+	if itemType == "any" {
+		return files
+	}
+	filtered := files[:0]
+	for _, file := range files {
+		isFolder := effectiveMIMEType(file) == FolderMIME
+		if (itemType == "folder" && isFolder) || (itemType == "file" && !isFolder) {
+			filtered = append(filtered, file)
+		}
+	}
+	return filtered
+}
+
+func effectiveMIMEType(file File) string {
+	if file.ShortcutDetails != nil && file.ShortcutDetails.TargetMIMEType != "" {
+		return file.ShortcutDetails.TargetMIMEType
+	}
+	return file.MIMEType
+}
+
 func normalizePageSize(n int) int {
 	if n <= 0 {
 		return 1000
@@ -817,6 +841,20 @@ func copySelectedHeaders(dst http.Header, src http.Header, keys ...string) {
 			}
 		}
 	}
+}
+
+func readableFileID(file File) string {
+	if file.ShortcutDetails != nil && file.ShortcutDetails.TargetID != "" {
+		return file.ShortcutDetails.TargetID
+	}
+	return file.ID
+}
+
+func readableResourceKey(file File) string {
+	if file.ShortcutDetails != nil && file.ShortcutDetails.TargetID != "" {
+		return file.ShortcutDetails.TargetResourceKey
+	}
+	return file.ResourceKey
 }
 
 func setResourceKeyHeader(req *http.Request, id string, resourceKey string) {

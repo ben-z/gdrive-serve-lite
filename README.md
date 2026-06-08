@@ -140,7 +140,7 @@ http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4?resourceKey=RESOURCE_KEY
 
 `GET /file/...` forwards directly to Drive `alt=media` and preserves `Range` plus standard conditional read headers such as `If-None-Match`, `If-Modified-Since`, and `If-Range`, so media seeking and cache validation are single upstream Drive requests. `HEAD /file/...` uses one metadata request and returns length/type headers without streaming file bytes.
 
-If Drive returns a `resourceKey` or `shortcutDetails.targetResourceKey` in metadata, path-based reads and generated browser links automatically pass it through on the upstream Drive request. ID-based endpoints accept `resourceKey=...` explicitly.
+If Drive returns a `resourceKey` or `shortcutDetails.targetResourceKey` in metadata, path-based reads, multi-segment path resolution, and generated browser links automatically pass it through on the upstream Drive request. ID-based endpoints accept `resourceKey=...` explicitly.
 
 Export a Google Docs/Sheets/Slides file:
 
