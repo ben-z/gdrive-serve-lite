@@ -74,7 +74,7 @@ GET https://www.googleapis.com/drive/v3/files/{fileId}?alt=media
 
 The Drive download guide documents partial downloads via the HTTP `Range` header. That is essential for video playback and seeking.
 
-The media endpoint also forwards standard HTTP validator headers (`If-None-Match`, `If-Modified-Since`, `If-Match`, `If-Unmodified-Since`, and `If-Range`) to Drive. This keeps browser cache validation and range revalidation as one upstream Drive request while avoiding broad forwarding of unrelated local request headers. Media read responses are passed through raw after auth/refresh, including Drive `Content-Disposition`, cache/checksum headers, `416` range errors, and their `Content-Range` header. Metadata-backed `HEAD` responses do not stream media; they use Drive `modifiedTime` for `Last-Modified` and can return `304 Not Modified` for `If-Modified-Since`.
+The media endpoint also forwards standard HTTP validator headers (`If-None-Match`, `If-Modified-Since`, `If-Match`, `If-Unmodified-Since`, and `If-Range`) to Drive. This keeps browser cache validation and range revalidation as one upstream Drive request while avoiding broad forwarding of unrelated local request headers. Media read responses are passed through raw after auth/refresh, including Drive `Content-Disposition`, cache/checksum headers, `416` range errors, and their `Content-Range` header. Metadata-backed blob `HEAD` responses do not stream media; they advertise `Accept-Ranges: bytes`, use Drive `modifiedTime` for `Last-Modified`, and can return `304 Not Modified` for `If-Modified-Since`.
 
 Google Workspace document export is separate:
 

@@ -717,6 +717,9 @@ func writeFileHead(w http.ResponseWriter, r *http.Request, meta drive.File, name
 	if meta.Size != "" {
 		w.Header().Set("Content-Length", meta.Size)
 	}
+	if supportsRangeHead(meta) {
+		w.Header().Set("Accept-Ranges", "bytes")
+	}
 	if name == "" {
 		name = meta.Name
 	}
@@ -738,6 +741,10 @@ func writeExportHead(w http.ResponseWriter, r *http.Request, file drive.File, fo
 		w.Header().Set("Content-Disposition", contentDisposition(exportName(name, format)))
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func supportsRangeHead(file drive.File) bool {
+	return file.Size != "" && !isWorkspaceReadable(file) && !isFolderLike(file)
 }
 
 func writeFolderHead(w http.ResponseWriter, r *http.Request) {
