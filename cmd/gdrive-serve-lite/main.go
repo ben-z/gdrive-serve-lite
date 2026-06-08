@@ -57,7 +57,7 @@ func main() {
 		log.Fatalf("invalid config: %v", err)
 	}
 
-	client := drive.NewClientWithHTTPClient(cfg, driveHTTPClient(*driveResponseHeaderTimeout))
+	client := drive.NewClientWithHTTPClient(cfg, drive.NewHTTPClient(*driveResponseHeaderTimeout))
 	client.SetMetadataCacheTTL(*metadataCacheTTL)
 	client.SetListCacheTTL(*listCacheTTL)
 	effectiveRootID := cfg.EffectiveRootFolderID()
@@ -88,13 +88,6 @@ func main() {
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
-}
-
-func driveHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = responseHeaderTimeout
-	transport.DisableCompression = true
-	return &http.Client{Transport: transport}
 }
 
 func splitRemotePath(remote string) (string, string) {

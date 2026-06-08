@@ -57,6 +57,31 @@ func TestNormalizeLimit(t *testing.T) {
 	}
 }
 
+func TestNewHTTPClientPreservesRawDriveResponses(t *testing.T) {
+	client := NewHTTPClient(7 * time.Second)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.ResponseHeaderTimeout != 7*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %s", transport.ResponseHeaderTimeout)
+	}
+	if !transport.DisableCompression {
+		t.Fatal("DisableCompression = false, want true")
+	}
+}
+
+func TestNewClientUsesRawHTTPClient(t *testing.T) {
+	client := NewClient(testConfig())
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", client.httpClient.Transport)
+	}
+	if !transport.DisableCompression {
+		t.Fatal("DisableCompression = false, want true")
+	}
+}
+
 func TestListChildrenAggregatesPagesToLimit(t *testing.T) {
 	var calls int
 	client := NewClientWithHTTPClient(testConfig(), &http.Client{
