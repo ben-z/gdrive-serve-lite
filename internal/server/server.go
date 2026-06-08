@@ -30,6 +30,7 @@ type basicAuth struct {
 type ListResponse struct {
 	Path             string       `json:"path,omitempty"`
 	FolderID         string       `json:"folderId"`
+	ResourceKey      string       `json:"resourceKey,omitempty"`
 	Count            int          `json:"count"`
 	Files            []drive.File `json:"files"`
 	NextPageToken    string       `json:"nextPageToken,omitempty"`
@@ -38,12 +39,18 @@ type ListResponse struct {
 }
 
 type ResolveResponse struct {
-	Path     string     `json:"path"`
-	ID       string     `json:"id"`
-	FolderID string     `json:"folderId,omitempty"`
-	ParentID string     `json:"parentId,omitempty"`
-	IsDir    bool       `json:"isDir"`
-	File     drive.File `json:"file"`
+	Path        string     `json:"path"`
+	ID          string     `json:"id"`
+	FolderID    string     `json:"folderId,omitempty"`
+	ResourceKey string     `json:"resourceKey,omitempty"`
+	ParentID    string     `json:"parentId,omitempty"`
+	IsDir       bool       `json:"isDir"`
+	File        drive.File `json:"file"`
+}
+
+type folderRef struct {
+	ID          string
+	ResourceKey string
 }
 
 func New(client *drive.Client, rootFolderID string) *Server {
@@ -101,7 +108,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	p := compatiblePath(r)
 	if p == "/" {
-		s.serveFolderPath(w, r, p, s.rootFolderID)
+		s.serveFolderPath(w, r, p, folderRef{ID: s.rootFolderID})
 		return
 	}
 	item, err := s.drive.ResolveItemPath(r.Context(), p, s.rootFolderID, "any")
@@ -109,8 +116,9 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if item.File.MIMEType == drive.FolderMIME {
-		s.serveFolderPath(w, r, item.Path, item.File.ID)
+	if isFolderLike(item.File) {
+		id, resourceKey := readableFileIDAndKey(item.File)
+		s.serveFolderPath(w, r, item.Path, folderRef{ID: id, ResourceKey: resourceKey})
 		return
 	}
 	s.serveResolvedFile(w, r, item.File, item.File.Name)
@@ -139,25 +147,26 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	folderID, err := s.folderIDFromRequest(r)
+	folder, err := s.folderFromRequest(r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	opts := drive.ListOptions{
-		FolderID:  folderID,
-		PageSize:  intParam(r, "pageSize", 1000),
-		Limit:     intParam(r, "limit", 0),
-		PageToken: r.URL.Query().Get("pageToken"),
-		OrderBy:   r.URL.Query().Get("orderBy"),
-		Type:      r.URL.Query().Get("type"),
+		FolderID:    folder.ID,
+		ResourceKey: folder.ResourceKey,
+		PageSize:    intParam(r, "pageSize", 1000),
+		Limit:       intParam(r, "limit", 0),
+		PageToken:   r.URL.Query().Get("pageToken"),
+		OrderBy:     r.URL.Query().Get("orderBy"),
+		Type:        r.URL.Query().Get("type"),
 	}
 	list, err := s.drive.ListChildren(r.Context(), opts)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, listResponse(r, folderID, list))
+	writeJSON(w, http.StatusOK, listResponse(r, folder, list))
 }
 
 func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
@@ -193,12 +202,17 @@ func (s *Server) handleExportFormats(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	defaultExport, hasDefaultExport := defaultExportForResponse(*file)
+	var defaultExportValue *drive.ExportFormat
+	if hasDefaultExport {
+		defaultExportValue = &defaultExport
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":            file.ID,
 		"name":          file.Name,
 		"mimeType":      file.MIMEType,
-		"defaultExport": file.DefaultExport,
-		"formats":       file.ExportFormats,
+		"defaultExport": defaultExportValue,
+		"formats":       exportFormatsForResponse(*file),
 	})
 }
 
@@ -226,7 +240,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	format, err := exportFormatFromRequest(r, *file)
+	format, err := exportFormatFromRequest(r, exportSourceFile(*file))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -305,8 +319,8 @@ func (s *Server) handlePathFile(w http.ResponseWriter, r *http.Request) {
 func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file drive.File, name string) {
 	id, resourceKey := readableFileIDAndKey(file)
 	if r.Method == http.MethodHead {
-		if drive.IsWorkspaceFile(file) || exportRequested(r) {
-			format, err := exportFormatFromRequest(r, file)
+		if isWorkspaceReadable(file) || exportRequested(r) {
+			format, err := exportFormatFromRequest(r, exportSourceFile(file))
 			if err != nil {
 				writeError(w, err)
 				return
@@ -317,8 +331,8 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 		writeFileHead(w, file, name)
 		return
 	}
-	if drive.IsWorkspaceFile(file) || exportRequested(r) {
-		format, err := exportFormatFromRequest(r, file)
+	if isWorkspaceReadable(file) || exportRequested(r) {
+		format, err := exportFormatFromRequest(r, exportSourceFile(file))
 		if err != nil {
 			writeError(w, err)
 			return
@@ -346,7 +360,7 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 	_, _ = io.Copy(w, res.Body)
 }
 
-func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p string, folderID string) {
+func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p string, folder folderRef) {
 	if r.Method == http.MethodHead {
 		if wantsJSON(r) {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -357,22 +371,23 @@ func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p strin
 		return
 	}
 	list, err := s.drive.ListChildren(r.Context(), drive.ListOptions{
-		FolderID:  folderID,
-		PageSize:  intParam(r, "pageSize", 1000),
-		Limit:     intParam(r, "limit", 0),
-		PageToken: r.URL.Query().Get("pageToken"),
-		OrderBy:   r.URL.Query().Get("orderBy"),
-		Type:      r.URL.Query().Get("type"),
+		FolderID:    folder.ID,
+		ResourceKey: folder.ResourceKey,
+		PageSize:    intParam(r, "pageSize", 1000),
+		Limit:       intParam(r, "limit", 0),
+		PageToken:   r.URL.Query().Get("pageToken"),
+		OrderBy:     r.URL.Query().Get("orderBy"),
+		Type:        r.URL.Query().Get("type"),
 	})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	if wantsJSON(r) {
-		writeJSON(w, http.StatusOK, listResponseWithPath(r, p, folderID, list))
+		writeJSON(w, http.StatusOK, listResponseWithPath(r, p, folder, list))
 		return
 	}
-	s.renderBrowse(w, r, p, folderID, list)
+	s.renderBrowse(w, r, p, folder, list)
 }
 
 func (s *Server) handleFileHead(w http.ResponseWriter, r *http.Request, fileID string, name string) {
@@ -390,7 +405,7 @@ func (s *Server) streamExport(w http.ResponseWriter, r *http.Request, file drive
 		return
 	}
 	id, resourceKey := readableFileIDAndKey(file)
-	if resourceKeyOverride != "" {
+	if resourceKeyOverride != "" && id == file.ID {
 		resourceKey = resourceKeyOverride
 	}
 	res, err := s.drive.ExportWithResourceKey(r.Context(), id, format.MIMEType, resourceKey)
@@ -422,49 +437,60 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	folderID, err := s.folderIDFromRequest(r)
+	folder, err := s.folderFromRequest(r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	p := browsePath(r)
 	list, err := s.drive.ListChildren(r.Context(), drive.ListOptions{
-		FolderID:  folderID,
-		PageSize:  intParam(r, "pageSize", 1000),
-		Limit:     intParam(r, "limit", 0),
-		PageToken: r.URL.Query().Get("pageToken"),
-		OrderBy:   r.URL.Query().Get("orderBy"),
-		Type:      r.URL.Query().Get("type"),
+		FolderID:    folder.ID,
+		ResourceKey: folder.ResourceKey,
+		PageSize:    intParam(r, "pageSize", 1000),
+		Limit:       intParam(r, "limit", 0),
+		PageToken:   r.URL.Query().Get("pageToken"),
+		OrderBy:     r.URL.Query().Get("orderBy"),
+		Type:        r.URL.Query().Get("type"),
 	})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	if wantsJSON(r) {
-		writeJSON(w, http.StatusOK, listResponseWithPath(r, p, folderID, list))
+		writeJSON(w, http.StatusOK, listResponseWithPath(r, p, folder, list))
 		return
 	}
-	s.renderBrowse(w, r, p, folderID, list)
+	s.renderBrowse(w, r, p, folder, list)
 }
 
-func (s *Server) folderIDFromRequest(r *http.Request) (string, error) {
+func (s *Server) folderFromRequest(r *http.Request) (folderRef, error) {
 	if id := r.URL.Query().Get("folderId"); id != "" {
-		return id, nil
+		return folderRef{ID: id, ResourceKey: r.URL.Query().Get("resourceKey")}, nil
 	}
 	if p := r.URL.Query().Get("path"); p != "" {
-		return s.drive.ResolvePath(r.Context(), p, s.rootFolderID)
+		item, err := s.drive.ResolveItemPath(r.Context(), p, s.rootFolderID, "folder")
+		if err != nil {
+			return folderRef{}, err
+		}
+		id, resourceKey := readableFileIDAndKey(item.File)
+		return folderRef{ID: id, ResourceKey: resourceKey}, nil
 	}
 	if strings.HasPrefix(r.URL.Path, "/browse") {
-		return s.drive.ResolvePath(r.Context(), browsePath(r), s.rootFolderID)
+		item, err := s.drive.ResolveItemPath(r.Context(), browsePath(r), s.rootFolderID, "folder")
+		if err != nil {
+			return folderRef{}, err
+		}
+		id, resourceKey := readableFileIDAndKey(item.File)
+		return folderRef{ID: id, ResourceKey: resourceKey}, nil
 	}
-	return s.rootFolderID, nil
+	return folderRef{ID: s.rootFolderID}, nil
 }
 
-func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p string, folderID string, list *drive.FileList) {
+func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p string, folder folderRef, list *drive.FileList) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, "<!doctype html><meta charset=\"utf-8\"><title>%s</title>", html.EscapeString(p))
 	fmt.Fprint(w, "<style>body{font:14px system-ui,sans-serif;margin:24px;max-width:1100px}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}a{text-decoration:none}code{background:#f5f5f5;padding:2px 4px}</style>")
-	fmt.Fprintf(w, "<h1>%s</h1><p><code>%s</code></p>", html.EscapeString(p), html.EscapeString(folderID))
+	fmt.Fprintf(w, "<h1>%s</h1><p><code>%s</code></p>", html.EscapeString(p), html.EscapeString(folder.ID))
 	fmt.Fprint(w, "<table><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Modified</th></tr></thead><tbody>")
 	if p != "/" {
 		parent := path.Dir(strings.TrimRight(p, "/"))
@@ -475,23 +501,29 @@ func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p string, 
 	}
 	for _, f := range list.Files {
 		name := html.EscapeString(f.Name)
-		if f.MIMEType == drive.FolderMIME {
+		if isFolderLike(f) {
 			childPath := path.Join(p, f.Name)
-			link := "/browse" + urlPath(childPath) + "?folderId=" + url.QueryEscape(f.ID)
+			childID, childResourceKey := readableFileIDAndKey(f)
+			link := withResourceKey("/browse"+urlPath(childPath)+"?folderId="+url.QueryEscape(childID), childResourceKey)
 			fmt.Fprintf(w, "<tr><td><a href=\"%s\">%s/</a></td><td>folder</td><td></td><td>%s</td></tr>", html.EscapeString(link), name, html.EscapeString(f.ModifiedTime))
 			continue
 		}
-		link := "/file/" + url.PathEscape(f.ID) + "/" + url.PathEscape(f.Name)
-		if f.DefaultExport != nil {
-			link = "/export/" + url.PathEscape(f.ID) + "/" + url.PathEscape(exportName(f.Name, *f.DefaultExport))
+		fileID, resourceKey := readableFileIDAndKey(f)
+		link := "/file/" + url.PathEscape(fileID) + "/" + url.PathEscape(f.Name)
+		if format, ok := defaultExportForResponse(f); ok {
+			link = "/export/" + url.PathEscape(fileID) + "/" + url.PathEscape(exportName(f.Name, format))
 		}
+		link = withResourceKey(link, resourceKey)
 		fmt.Fprintf(w, "<tr><td><a href=\"%s\">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>", html.EscapeString(link), name, html.EscapeString(f.MIMEType), html.EscapeString(f.Size), html.EscapeString(f.ModifiedTime))
 	}
 	fmt.Fprint(w, "</tbody></table>")
 	if list.NextPageToken != "" {
 		q := r.URL.Query()
 		q.Set("pageToken", list.NextPageToken)
-		q.Set("folderId", folderID)
+		q.Set("folderId", folder.ID)
+		if folder.ResourceKey != "" {
+			q.Set("resourceKey", folder.ResourceKey)
+		}
 		next := r.URL.Path + "?" + q.Encode()
 		fmt.Fprintf(w, "<p><a href=\"%s\">Next page</a></p>", html.EscapeString(next))
 	}
@@ -572,9 +604,10 @@ func writeError(w http.ResponseWriter, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
-func listResponse(r *http.Request, folderID string, list *drive.FileList) ListResponse {
+func listResponse(r *http.Request, folder folderRef, list *drive.FileList) ListResponse {
 	resp := ListResponse{
-		FolderID:         folderID,
+		FolderID:         folder.ID,
+		ResourceKey:      folder.ResourceKey,
 		Count:            len(list.Files),
 		Files:            list.Files,
 		NextPageToken:    list.NextPageToken,
@@ -582,18 +615,24 @@ func listResponse(r *http.Request, folderID string, list *drive.FileList) ListRe
 	}
 	if list.NextPageToken != "" {
 		q := r.URL.Query()
-		q.Set("folderId", folderID)
+		q.Set("folderId", folder.ID)
+		if folder.ResourceKey != "" {
+			q.Set("resourceKey", folder.ResourceKey)
+		}
 		q.Set("pageToken", list.NextPageToken)
 		resp.Next = r.URL.Path + "?" + q.Encode()
 	}
 	return resp
 }
 
-func listResponseWithPath(r *http.Request, p string, folderID string, list *drive.FileList) ListResponse {
-	resp := listResponse(r, folderID, list)
+func listResponseWithPath(r *http.Request, p string, folder folderRef, list *drive.FileList) ListResponse {
+	resp := listResponse(r, folder, list)
 	resp.Path = p
 	if list.NextPageToken != "" {
 		q := r.URL.Query()
+		if folder.ResourceKey != "" && q.Get("folderId") != "" {
+			q.Set("resourceKey", folder.ResourceKey)
+		}
 		q.Set("pageToken", list.NextPageToken)
 		resp.Next = r.URL.Path + "?" + q.Encode()
 	}
@@ -601,16 +640,18 @@ func listResponseWithPath(r *http.Request, p string, folderID string, list *driv
 }
 
 func resolveResponse(item *drive.ResolvedItem) ResolveResponse {
-	isDir := item.File.MIMEType == drive.FolderMIME
+	isDir := isFolderLike(item.File)
+	id, resourceKey := readableFileIDAndKey(item.File)
 	resp := ResolveResponse{
-		Path:     item.Path,
-		ID:       item.File.ID,
-		ParentID: item.ParentID,
-		IsDir:    isDir,
-		File:     item.File,
+		Path:        item.Path,
+		ID:          item.File.ID,
+		ResourceKey: resourceKey,
+		ParentID:    item.ParentID,
+		IsDir:       isDir,
+		File:        item.File,
 	}
 	if isDir {
-		resp.FolderID = item.File.ID
+		resp.FolderID = id
 	}
 	return resp
 }
@@ -675,6 +716,39 @@ func exportName(name string, format drive.ExportFormat) string {
 	return name + "." + format.Extension
 }
 
+func isFolderLike(file drive.File) bool {
+	return effectiveMIMEType(file) == drive.FolderMIME
+}
+
+func isWorkspaceReadable(file drive.File) bool {
+	return drive.IsWorkspaceFile(exportSourceFile(file))
+}
+
+func exportSourceFile(file drive.File) drive.File {
+	if file.ShortcutDetails != nil && file.ShortcutDetails.TargetMIMEType != "" {
+		file.MIMEType = file.ShortcutDetails.TargetMIMEType
+		file.ExportLinks = nil
+		file.ExportFormats = nil
+		file.DefaultExport = nil
+	}
+	return file
+}
+
+func effectiveMIMEType(file drive.File) string {
+	if file.ShortcutDetails != nil && file.ShortcutDetails.TargetMIMEType != "" {
+		return file.ShortcutDetails.TargetMIMEType
+	}
+	return file.MIMEType
+}
+
+func defaultExportForResponse(file drive.File) (drive.ExportFormat, bool) {
+	return drive.DefaultExportFormat(exportSourceFile(file))
+}
+
+func exportFormatsForResponse(file drive.File) []drive.ExportFormat {
+	return drive.SupportedExportFormats(exportSourceFile(file))
+}
+
 func readableFileIDAndKey(file drive.File) (string, string) {
 	if file.ShortcutDetails != nil && file.ShortcutDetails.TargetID != "" {
 		return file.ShortcutDetails.TargetID, file.ShortcutDetails.TargetResourceKey
@@ -707,6 +781,17 @@ func wantsJSON(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+func withResourceKey(link string, resourceKey string) string {
+	if resourceKey == "" {
+		return link
+	}
+	separator := "?"
+	if strings.Contains(link, "?") {
+		separator = "&"
+	}
+	return link + separator + "resourceKey=" + url.QueryEscape(resourceKey)
 }
 
 func copyHeader(dst http.Header, src http.Header, key string) {
