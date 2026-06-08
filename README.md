@@ -57,13 +57,21 @@ export GDSL_ROOT_FOLDER_ID='root'   # optional; defaults to drive ID, then root
 List a folder by ID:
 
 ```sh
-curl 'http://127.0.0.1:8765/api/list?folderId=DRIVE_FOLDER_ID&type=files&pageSize=1000'
+curl 'http://127.0.0.1:8765/api/list?folderId=DRIVE_FOLDER_ID&type=files&pageSize=1000&limit=1000'
 ```
+
+`pageSize` is the requested Drive page size. `limit` is the maximum number of entries to return to the caller. If Drive returns a short partial page, the server follows `nextPageToken` until it has `limit` entries or reaches the end. Responses include `nextPageToken` and a ready-to-call `next` URL when more entries are available.
 
 Resolve a folder path:
 
 ```sh
 curl 'http://127.0.0.1:8765/api/resolve?path=/Videos/Clips'
+```
+
+Fetch file metadata:
+
+```sh
+curl 'http://127.0.0.1:8765/api/file?id=DRIVE_FILE_ID'
 ```
 
 Browse in a browser:
@@ -77,6 +85,8 @@ Download or stream a file:
 ```text
 http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4
 ```
+
+`GET /file/...` forwards directly to Drive `alt=media` and preserves `Range`, so media seeking is a single upstream Drive request. `HEAD /file/...` uses one metadata request and returns length/type headers without streaming file bytes.
 
 ## Current limits
 

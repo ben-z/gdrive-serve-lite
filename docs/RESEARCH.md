@@ -44,6 +44,8 @@ The official `files.list` docs currently say page results can be partial or empt
 - always return `nextPageToken`
 - let callers keep paging
 
+Implementation detail: `/api/list` accepts both `pageSize` and `limit`. `pageSize` controls the Drive request size; `limit` controls how many entries the HTTP response should contain. This keeps normal one-page reads cheap while making "first 1000 files" ergonomic even if Drive returns short pages.
+
 ### Sorting
 
 Drive supports `orderBy`, but the docs warn that `createdTime` can be problematic for large collections and recommend `modifiedTime desc` for time-related sorting on large item collections. In local timing, unsorted listing was faster than sorted listing.
@@ -117,6 +119,7 @@ That rclone-generated encrypted fixture is covered by unit tests.
 - JSON API
 - basic HTML browser
 - file streaming with Range forwarding
+- metadata endpoint separated from media streaming, so GET reads stay one upstream request
 
 ## Local timings that motivated this
 
@@ -133,7 +136,8 @@ Against a large shared-drive folder:
 ## Initial API shape
 
 ```text
-GET /api/list?folderId=...&type=all|files|dirs&pageSize=1000&pageToken=...&orderBy=...
+GET /api/list?folderId=...&type=all|files|dirs&pageSize=1000&limit=1000&pageToken=...&orderBy=...
+GET /api/file?id=...
 GET /api/resolve?path=/a/b/c
 GET /file/{fileId}/{optional-name}
 GET /browse/{path}

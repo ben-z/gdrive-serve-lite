@@ -36,6 +36,19 @@ type Client struct {
 	mu         sync.Mutex
 }
 
+type APIError struct {
+	StatusCode int
+	Status     string
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	if e.Body == "" {
+		return "Drive API " + e.Status
+	}
+	return "Drive API " + e.Status + ": " + e.Body
+}
+
 type File struct {
 	ID              string            `json:"id"`
 	Name            string            `json:"name"`
@@ -64,16 +77,24 @@ type FileList struct {
 type ListOptions struct {
 	FolderID  string
 	PageSize  int
+	Limit     int
 	PageToken string
 	OrderBy   string
 	Type      string
 }
 
 func NewClient(cfg config.Config) *Client {
+	return NewClientWithHTTPClient(cfg, http.DefaultClient)
+}
+
+func NewClientWithHTTPClient(cfg config.Config, httpClient *http.Client) *Client {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 	return &Client{
 		cfg:        cfg,
 		token:      cfg.Token,
-		httpClient: http.DefaultClient,
+		httpClient: httpClient,
 	}
 }
 
@@ -81,12 +102,49 @@ func (c *Client) ListChildren(ctx context.Context, opts ListOptions) (*FileList,
 	if opts.FolderID == "" {
 		return nil, errors.New("folder ID is required")
 	}
+	pageSize := normalizePageSize(opts.PageSize)
+	limit := normalizeLimit(opts.Limit, pageSize)
+
+	var combined FileList
+	nextToken := opts.PageToken
+	seenTokens := map[string]struct{}{}
+	for pageRequests := 0; len(combined.Files) < limit; pageRequests++ {
+		if pageRequests >= 10000 {
+			return nil, errors.New("too many Drive list pages without reaching limit")
+		}
+		if nextToken != "" {
+			if _, seen := seenTokens[nextToken]; seen {
+				return nil, fmt.Errorf("Drive returned repeated page token %q", nextToken)
+			}
+			seenTokens[nextToken] = struct{}{}
+		}
+		remaining := limit - len(combined.Files)
+		thisPageSize := pageSize
+		if remaining < thisPageSize {
+			thisPageSize = remaining
+		}
+		page, err := c.listChildrenPage(ctx, opts, nextToken, thisPageSize)
+		if err != nil {
+			return nil, err
+		}
+		combined.Files = append(combined.Files, page.Files...)
+		combined.IncompleteSearch = combined.IncompleteSearch || page.IncompleteSearch
+		combined.NextPageToken = page.NextPageToken
+		if page.NextPageToken == "" {
+			break
+		}
+		nextToken = page.NextPageToken
+	}
+	return &combined, nil
+}
+
+func (c *Client) listChildrenPage(ctx context.Context, opts ListOptions, pageToken string, pageSize int) (*FileList, error) {
 	q := "trashed=false and " + quote(opts.FolderID) + " in parents"
 	switch opts.Type {
 	case "", "all":
 	case "files":
 		q += " and mimeType != " + quote(FolderMIME)
-	case "dirs", "folders":
+	case "dirs", "folders", "directories":
 		q += " and mimeType = " + quote(FolderMIME)
 	default:
 		return nil, fmt.Errorf("invalid list type %q", opts.Type)
@@ -95,9 +153,9 @@ func (c *Client) ListChildren(ctx context.Context, opts ListOptions) (*FileList,
 	values := c.baseListValues()
 	values.Set("q", q)
 	values.Set("fields", "nextPageToken,incompleteSearch,files(id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,shortcutDetails)")
-	values.Set("pageSize", fmt.Sprintf("%d", normalizePageSize(opts.PageSize)))
-	if opts.PageToken != "" {
-		values.Set("pageToken", opts.PageToken)
+	values.Set("pageSize", fmt.Sprintf("%d", pageSize))
+	if pageToken != "" {
+		values.Set("pageToken", pageToken)
 	}
 	if opts.OrderBy != "" {
 		values.Set("orderBy", opts.OrderBy)
@@ -250,7 +308,11 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	if res.StatusCode >= 400 {
 		defer res.Body.Close()
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
-		return nil, fmt.Errorf("Drive API %s: %s", res.Status, strings.TrimSpace(string(body)))
+		return nil, &APIError{
+			StatusCode: res.StatusCode,
+			Status:     res.Status,
+			Body:       strings.TrimSpace(string(body)),
+		}
 	}
 	return res, nil
 }
@@ -333,6 +395,16 @@ func normalizePageSize(n int) int {
 		return 1000
 	}
 	return n
+}
+
+func normalizeLimit(limit int, pageSize int) int {
+	if limit <= 0 {
+		return pageSize
+	}
+	if limit > 10000 {
+		return 10000
+	}
+	return limit
 }
 
 func cloneRequest(req *http.Request) *http.Request {
