@@ -18,6 +18,7 @@ func main() {
 	configPath := flag.String("config", "", "rclone config file path")
 	rootFolderID := flag.String("root-folder-id", "", "Drive folder ID to use as browse/resolve root")
 	driveID := flag.String("drive-id", "", "shared drive ID override")
+	metadataCacheTTL := flag.Duration("metadata-cache-ttl", drive.DefaultMetadataCacheTTL, "positive metadata/path lookup cache TTL; 0 disables")
 	flag.Parse()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -41,6 +42,7 @@ func main() {
 	}
 
 	client := drive.NewClient(cfg)
+	client.SetMetadataCacheTTL(*metadataCacheTTL)
 	app := server.New(client, cfg.EffectiveRootFolderID())
 	httpServer := &http.Server{
 		Addr:              *addr,
@@ -48,7 +50,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("gdrive-serve-lite listening on http://%s (config=%s root=%s)", *addr, cfg.Source, cfg.EffectiveRootFolderID())
+	log.Printf("gdrive-serve-lite listening on http://%s (config=%s root=%s metadataCacheTTL=%s)", *addr, cfg.Source, cfg.EffectiveRootFolderID(), metadataCacheTTL.String())
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
