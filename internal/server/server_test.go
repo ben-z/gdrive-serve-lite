@@ -838,6 +838,30 @@ func TestFileEndpointStreamsMediaInOneDriveRequest(t *testing.T) {
 	}
 }
 
+func TestFileEndpointPreservesEscapedDecorativeName(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if req.URL.Path != "/drive/v3/files/file-1" {
+			t.Fatalf("path = %q", req.URL.Path)
+		}
+		return textResponse(http.StatusOK, "media-bytes"), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/file/file-1/100%25%2Fdone.mp4", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), "100%25%2Fdone.mp4") {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+}
+
 func TestFileEndpointForwardsConditionalHeaders(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {
@@ -1106,6 +1130,43 @@ func TestExportEndpointDefaultsToRcloneLikeFormat(t *testing.T) {
 	}
 	if rec.Header().Get("Expires") != "Mon, 08 Jun 2026 13:34:56 GMT" {
 		t.Fatalf("Expires = %q", rec.Header().Get("Expires"))
+	}
+}
+
+func TestExportEndpointPreservesEscapedDecorativeName(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return jsonResponse(http.StatusOK, `{
+				"id":"doc-1",
+				"name":"ignored",
+				"mimeType":"application/vnd.google-apps.document",
+				"exportLinks":{"application/pdf":"https://example.invalid/pdf"}
+			}`), nil
+		case 2:
+			if req.URL.Path != "/drive/v3/files/doc-1/export" {
+				t.Fatalf("export path = %q", req.URL.Path)
+			}
+			return textResponse(http.StatusOK, "%PDF"), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/export/doc-1/Report%20100%25%2Ffinal?format=pdf", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), "Report%20100%25%2Ffinal.pdf") {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
 	}
 }
 

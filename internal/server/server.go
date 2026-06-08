@@ -283,19 +283,15 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errors.New("Range is not supported for Drive exports"))
 		return
 	}
-	rest := strings.TrimPrefix(r.URL.Path, "/export/")
-	if rest == "" {
+	fileID, name, ok, err := idAndNameFromEscapedPath(r, "/export/")
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	rawID, _, _ := strings.Cut(rest, "/")
-	fileID, err := url.PathUnescape(rawID)
-	if err != nil || fileID == "" {
+	if err != nil {
 		http.Error(w, "invalid file ID", http.StatusBadRequest)
 		return
 	}
-	_, rawName, _ := strings.Cut(rest, "/")
-	name, _ := url.PathUnescape(rawName)
 
 	file, err := s.drive.GetFileWithResourceKey(r.Context(), fileID, r.URL.Query().Get("resourceKey"))
 	if err != nil {
@@ -319,19 +315,15 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
-	rest := strings.TrimPrefix(r.URL.Path, "/file/")
-	if rest == "" {
+	fileID, name, ok, err := idAndNameFromEscapedPath(r, "/file/")
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	rawID, _, _ := strings.Cut(rest, "/")
-	fileID, err := url.PathUnescape(rawID)
-	if err != nil || fileID == "" {
+	if err != nil {
 		http.Error(w, "invalid file ID", http.StatusBadRequest)
 		return
 	}
-	_, rawName, _ := strings.Cut(rest, "/")
-	name, _ := url.PathUnescape(rawName)
 
 	if r.Method == http.MethodHead {
 		s.handleFileHead(w, r, fileID, name)
@@ -653,6 +645,23 @@ func compatiblePath(r *http.Request) string {
 		return "/"
 	}
 	return path.Clean("/" + strings.TrimPrefix(p, "/"))
+}
+
+func idAndNameFromEscapedPath(r *http.Request, prefix string) (string, string, bool, error) {
+	rest := strings.TrimPrefix(escapedPath(r), prefix)
+	if rest == "" {
+		return "", "", false, nil
+	}
+	rawID, rawName, _ := strings.Cut(rest, "/")
+	fileID, err := url.PathUnescape(rawID)
+	if err != nil || fileID == "" {
+		return "", "", true, errors.New("invalid file ID")
+	}
+	name, err := url.PathUnescape(rawName)
+	if err != nil {
+		name = ""
+	}
+	return fileID, name, true, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
