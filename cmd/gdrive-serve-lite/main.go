@@ -15,6 +15,7 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8765", "HTTP listen address")
 	remote := flag.String("remote", "", "rclone remote name to read OAuth config from")
+	configPath := flag.String("config", "", "rclone config file path")
 	rootFolderID := flag.String("root-folder-id", "", "Drive folder ID to use as browse/resolve root")
 	driveID := flag.String("drive-id", "", "shared drive ID override")
 	flag.Parse()
@@ -22,7 +23,10 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cfg, err := config.Load(ctx, *remote)
+	cfg, err := config.Load(ctx, config.LoadOptions{
+		Remote:     *remote,
+		ConfigPath: *configPath,
+	})
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}

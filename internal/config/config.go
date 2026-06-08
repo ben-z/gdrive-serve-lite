@@ -27,14 +27,33 @@ type Config struct {
 	Source       string
 }
 
-func Load(ctx context.Context, remote string) (Config, error) {
+type LoadOptions struct {
+	Remote     string
+	ConfigPath string
+}
+
+func Load(ctx context.Context, opts LoadOptions) (Config, error) {
 	if cfg, ok := loadEnv(); ok {
 		return cfg, nil
 	}
+	remote := strings.TrimSuffix(opts.Remote, ":")
 	if remote == "" {
 		return Config{}, errors.New("no auth config found: set GDSL_* env vars or pass --remote")
 	}
-	return loadRclone(ctx, remote)
+
+	cfg, err := loadRcloneFile(remote, opts.ConfigPath, os.Getenv("RCLONE_CONFIG_PASS"))
+	if err == nil {
+		return cfg, nil
+	}
+	if errors.Is(err, errConfigFileEncrypted) || errors.Is(err, errConfigFileDecrypt) {
+		return Config{}, err
+	}
+
+	dumpCfg, dumpErr := loadRcloneDump(ctx, remote)
+	if dumpErr != nil {
+		return Config{}, fmt.Errorf("load rclone config file: %v; rclone config dump fallback: %w", err, dumpErr)
+	}
+	return dumpCfg, nil
 }
 
 func (c Config) Validate() error {
@@ -85,8 +104,7 @@ func loadEnv() (Config, bool) {
 	}, true
 }
 
-func loadRclone(ctx context.Context, remote string) (Config, error) {
-	remote = strings.TrimSuffix(remote, ":")
+func loadRcloneDump(ctx context.Context, remote string) (Config, error) {
 	cmd := exec.CommandContext(ctx, "rclone", "config", "dump")
 	out, err := cmd.Output()
 	if err != nil {
@@ -101,20 +119,5 @@ func loadRclone(ctx context.Context, remote string) (Config, error) {
 	if !ok {
 		return Config{}, fmt.Errorf("rclone remote %q not found", remote)
 	}
-
-	var token OAuthToken
-	if raw := entry["token"]; raw != "" {
-		if err := json.Unmarshal([]byte(raw), &token); err != nil {
-			return Config{}, fmt.Errorf("parse rclone token for %q: %w", remote, err)
-		}
-	}
-
-	return Config{
-		ClientID:     entry["client_id"],
-		ClientSecret: entry["client_secret"],
-		Token:        token,
-		DriveID:      entry["team_drive"],
-		RootFolderID: entry["root_folder_id"],
-		Source:       "rclone:" + remote,
-	}, nil
+	return configFromRcloneEntry(remote, entry)
 }
