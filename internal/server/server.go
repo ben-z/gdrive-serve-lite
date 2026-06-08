@@ -22,6 +22,7 @@ type Server struct {
 	root        folderRef
 	auth        *basicAuth
 	allowOrigin string
+	basePath    string
 }
 
 type basicAuth struct {
@@ -96,6 +97,10 @@ func (s *Server) SetAllowOrigin(origin string) {
 	s.allowOrigin = strings.TrimSpace(origin)
 }
 
+func (s *Server) SetBaseURL(baseURL string) {
+	s.basePath = normalizeBasePath(baseURL)
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -110,6 +115,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/browse", s.handleBrowse)
 	mux.HandleFunc("/", s.handleRoot)
 	var handler http.Handler = mux
+	if s.basePath != "" {
+		handler = basePathMiddleware(s.basePath, handler)
+	}
 	if s.auth != nil {
 		handler = s.authMiddleware(handler)
 	}
@@ -224,7 +232,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, listResponse(r, folder, list))
+	writeJSON(w, http.StatusOK, s.listResponse(r, folder, list))
 }
 
 func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
@@ -427,7 +435,7 @@ func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p folde
 		return
 	}
 	if wantsJSON(r) {
-		writeJSON(w, http.StatusOK, listResponseWithPath(r, p.Display, folder, list))
+		writeJSON(w, http.StatusOK, s.listResponseWithPath(r, p.Display, folder, list))
 		return
 	}
 	s.renderBrowse(w, r, p, folder, list)
@@ -501,7 +509,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if wantsJSON(r) {
-		writeJSON(w, http.StatusOK, listResponseWithPath(r, p.Display, folder, list))
+		writeJSON(w, http.StatusOK, s.listResponseWithPath(r, p.Display, folder, list))
 		return
 	}
 	s.renderBrowse(w, r, p, folder, list)
@@ -545,20 +553,20 @@ func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p folderPa
 		if parent == "." {
 			parent = "/"
 		}
-		fmt.Fprintf(w, "<tr><td><a href=\"%s\">..</a></td><td>folder</td><td></td><td></td></tr>", html.EscapeString("/browse"+parent))
+		fmt.Fprintf(w, "<tr><td><a href=\"%s\">..</a></td><td>folder</td><td></td><td></td></tr>", html.EscapeString(s.link("/browse"+parent)))
 	}
 	for _, f := range list.Files {
 		name := html.EscapeString(f.Name)
 		if isFolderLike(f) {
 			childID, childResourceKey := readableFileIDAndKey(f)
-			link := withResourceKey("/browse"+urlEscapedPathAppend(p.Escaped, f.Name)+"?folderId="+url.QueryEscape(childID), childResourceKey)
+			link := withResourceKey(s.link("/browse"+urlEscapedPathAppend(p.Escaped, f.Name)+"?folderId="+url.QueryEscape(childID)), childResourceKey)
 			fmt.Fprintf(w, "<tr><td><a href=\"%s\">%s/</a></td><td>folder</td><td></td><td>%s</td></tr>", html.EscapeString(link), name, html.EscapeString(f.ModifiedTime))
 			continue
 		}
 		fileID, resourceKey := readableFileIDAndKey(f)
-		link := "/file/" + url.PathEscape(fileID) + "/" + url.PathEscape(f.Name)
+		link := s.link("/file/" + url.PathEscape(fileID) + "/" + url.PathEscape(f.Name))
 		if format, ok := defaultExportForResponse(f); ok {
-			link = "/export/" + url.PathEscape(fileID) + "/" + url.PathEscape(exportName(f.Name, format))
+			link = s.link("/export/" + url.PathEscape(fileID) + "/" + url.PathEscape(exportName(f.Name, format)))
 		}
 		link = withResourceKey(link, resourceKey)
 		fmt.Fprintf(w, "<tr><td><a href=\"%s\">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>", html.EscapeString(link), name, html.EscapeString(f.MIMEType), html.EscapeString(f.Size), html.EscapeString(f.ModifiedTime))
@@ -571,7 +579,7 @@ func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p folderPa
 		if folder.ResourceKey != "" {
 			q.Set("resourceKey", folder.ResourceKey)
 		}
-		next := "/browse" + p.Escaped + "?" + q.Encode()
+		next := s.link("/browse" + p.Escaped + "?" + q.Encode())
 		fmt.Fprintf(w, "<p><a href=\"%s\">Next page</a></p>", html.EscapeString(next))
 	}
 }
@@ -633,6 +641,76 @@ func escapedPath(r *http.Request) string {
 		p = r.URL.Path
 	}
 	return p
+}
+
+func basePathMiddleware(basePath string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != basePath && !strings.HasPrefix(r.URL.Path, basePath+"/") {
+			http.NotFound(w, r)
+			return
+		}
+		stripped := r.Clone(r.Context())
+		strippedPath := strings.TrimPrefix(r.URL.Path, basePath)
+		if strippedPath == "" {
+			strippedPath = "/"
+		}
+		stripped.URL.Path = strippedPath
+		if r.URL.RawPath != "" {
+			stripped.URL.RawPath = stripRawBasePath(r.URL.RawPath, basePath)
+		}
+		next.ServeHTTP(w, stripped)
+	})
+}
+
+func stripRawBasePath(rawPath string, basePath string) string {
+	for _, prefix := range []string{basePath, escapedBasePath(basePath)} {
+		if rawPath == prefix {
+			return ""
+		}
+		if strings.HasPrefix(rawPath, prefix+"/") {
+			return strings.TrimPrefix(rawPath, prefix)
+		}
+	}
+	return ""
+}
+
+func escapedBasePath(basePath string) string {
+	parts := strings.Split(strings.Trim(basePath, "/"), "/")
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	return "/" + strings.Join(parts, "/")
+}
+
+func normalizeBasePath(baseURL string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" || baseURL == "/" {
+		return ""
+	}
+	if parsed, err := url.Parse(baseURL); err == nil && parsed.Path != "" {
+		baseURL = parsed.Path
+	}
+	if !strings.HasPrefix(baseURL, "/") {
+		baseURL = "/" + baseURL
+	}
+	baseURL = path.Clean(baseURL)
+	if baseURL == "/" || baseURL == "." {
+		return ""
+	}
+	return strings.TrimRight(baseURL, "/")
+}
+
+func (s *Server) link(target string) string {
+	if s.basePath == "" {
+		return target
+	}
+	if target == "" {
+		return s.basePath
+	}
+	if !strings.HasPrefix(target, "/") {
+		target = "/" + target
+	}
+	return s.basePath + target
 }
 
 func pathRest(r *http.Request, prefix string) string {
@@ -703,12 +781,12 @@ func writeError(w http.ResponseWriter, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
-func listResponse(r *http.Request, folder folderRef, list *drive.FileList) ListResponse {
+func (s *Server) listResponse(r *http.Request, folder folderRef, list *drive.FileList) ListResponse {
 	resp := ListResponse{
 		FolderID:         folder.ID,
 		ResourceKey:      folder.ResourceKey,
 		Count:            len(list.Files),
-		Files:            listFiles(list.Files, includeEntryURLs(r)),
+		Files:            s.listFiles(list.Files, includeEntryURLs(r)),
 		NextPageToken:    list.NextPageToken,
 		IncompleteSearch: list.IncompleteSearch,
 	}
@@ -719,12 +797,12 @@ func listResponse(r *http.Request, folder folderRef, list *drive.FileList) ListR
 			q.Set("resourceKey", folder.ResourceKey)
 		}
 		q.Set("pageToken", list.NextPageToken)
-		resp.Next = escapedPath(r) + "?" + q.Encode()
+		resp.Next = s.link(escapedPath(r) + "?" + q.Encode())
 	}
 	return resp
 }
 
-func listFiles(files []drive.File, includeURLs bool) []drive.File {
+func (s *Server) listFiles(files []drive.File, includeURLs bool) []drive.File {
 	if len(files) == 0 {
 		return nil
 	}
@@ -734,22 +812,22 @@ func listFiles(files []drive.File, includeURLs bool) []drive.File {
 	withURLs := make([]drive.File, len(files))
 	for i, file := range files {
 		withURLs[i] = file
-		withURLs[i].URL = entryURL(file)
+		withURLs[i].URL = s.entryURL(file)
 	}
 	return withURLs
 }
 
-func entryURL(file drive.File) string {
+func (s *Server) entryURL(file drive.File) string {
 	id, resourceKey := readableFileIDAndKey(file)
 	if id == "" {
 		return ""
 	}
 	if isFolderLike(file) {
-		return withResourceKey("/browse?folderId="+url.QueryEscape(id), resourceKey)
+		return withResourceKey(s.link("/browse?folderId="+url.QueryEscape(id)), resourceKey)
 	}
-	link := "/file/" + url.PathEscape(id) + "/" + url.PathEscape(file.Name)
+	link := s.link("/file/" + url.PathEscape(id) + "/" + url.PathEscape(file.Name))
 	if format, ok := defaultExportForResponse(file); ok {
-		link = "/export/" + url.PathEscape(id) + "/" + url.PathEscape(exportName(file.Name, format))
+		link = s.link("/export/" + url.PathEscape(id) + "/" + url.PathEscape(exportName(file.Name, format)))
 	}
 	return withResourceKey(link, resourceKey)
 }
@@ -763,8 +841,8 @@ func includeEntryURLs(r *http.Request) bool {
 	}
 }
 
-func listResponseWithPath(r *http.Request, p string, folder folderRef, list *drive.FileList) ListResponse {
-	resp := listResponse(r, folder, list)
+func (s *Server) listResponseWithPath(r *http.Request, p string, folder folderRef, list *drive.FileList) ListResponse {
+	resp := s.listResponse(r, folder, list)
 	resp.Path = p
 	if list.NextPageToken != "" {
 		q := r.URL.Query()
@@ -772,7 +850,7 @@ func listResponseWithPath(r *http.Request, p string, folder folderRef, list *dri
 			q.Set("resourceKey", folder.ResourceKey)
 		}
 		q.Set("pageToken", list.NextPageToken)
-		resp.Next = escapedPath(r) + "?" + q.Encode()
+		resp.Next = s.link(escapedPath(r) + "?" + q.Encode())
 	}
 	return resp
 }
