@@ -172,6 +172,74 @@ func TestListChildrenRejectsRepeatedPageToken(t *testing.T) {
 	}
 }
 
+func TestResolveItemPathFile(t *testing.T) {
+	var calls int
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if req.URL.Path != "/drive/v3/files" {
+				t.Fatalf("path = %q", req.URL.Path)
+			}
+			q := req.URL.Query()
+			if q.Get("pageSize") != "2" {
+				t.Fatalf("pageSize = %q", q.Get("pageSize"))
+			}
+			if !strings.Contains(q.Get("fields"), "md5Checksum") {
+				t.Fatalf("fields = %q", q.Get("fields"))
+			}
+			switch calls {
+			case 1:
+				query := q.Get("q")
+				if !strings.Contains(query, "'root-folder' in parents") ||
+					!strings.Contains(query, "name = 'RecentClips'") ||
+					!strings.Contains(query, "mimeType = '"+FolderMIME+"'") {
+					t.Fatalf("folder query = %q", query)
+				}
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"RecentClips","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+			case 2:
+				query := q.Get("q")
+				if !strings.Contains(query, "'folder-1' in parents") ||
+					!strings.Contains(query, "name = 'video.mp4'") ||
+					!strings.Contains(query, "mimeType != '"+FolderMIME+"'") {
+					t.Fatalf("file query = %q", query)
+				}
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}]}`), nil
+			default:
+				t.Fatalf("unexpected request %d", calls)
+				return nil, nil
+			}
+		}),
+	})
+
+	item, err := client.ResolveItemPath(context.Background(), "/RecentClips/video.mp4", "root-folder", "file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if item.Path != "/RecentClips/video.mp4" || item.ParentID != "folder-1" || item.File.ID != "file-1" {
+		t.Fatalf("item = %+v", item)
+	}
+}
+
+func TestResolveItemPathAmbiguous(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"duplicate","mimeType":"application/vnd.google-apps.folder"},{"id":"b","name":"duplicate","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		}),
+	})
+
+	_, err := client.ResolveItemPath(context.Background(), "/duplicate", "root-folder", "folder")
+	var ambiguous *AmbiguousPathError
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("error = %v, want AmbiguousPathError", err)
+	}
+	if ambiguous.Segment != "duplicate" || ambiguous.Parent != "root-folder" || ambiguous.Count != 2 {
+		t.Fatalf("ambiguous = %+v", ambiguous)
+	}
+}
+
 func TestAPIErrorPreservesStatus(t *testing.T) {
 	client := NewClientWithHTTPClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

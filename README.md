@@ -5,8 +5,9 @@
 The first version is intentionally narrow:
 
 - paginated Drive-native directory listing
-- folder path resolution as a convenience
+- folder and file path resolution as a convenience
 - file download/streaming by Drive file ID
+- optional file download/streaming by Drive path
 - HTTP `Range` forwarding for media seeking
 - optional reuse of an rclone remote's OAuth config
 
@@ -68,6 +69,14 @@ Resolve a folder path:
 curl 'http://127.0.0.1:8765/api/resolve?path=/teslacam1/RecentClips'
 ```
 
+Resolve a file path:
+
+```sh
+curl 'http://127.0.0.1:8765/api/resolve?path=/teslacam1/RecentClips/clip.mp4&type=file'
+```
+
+`type` can be `folder`, `file`, or `any`. The default is `folder` for compatibility with folder listing and browsing.
+
 Fetch file metadata:
 
 ```sh
@@ -88,6 +97,14 @@ http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4
 
 `GET /file/...` forwards directly to Drive `alt=media` and preserves `Range`, so media seeking is a single upstream Drive request. `HEAD /file/...` uses one metadata request and returns length/type headers without streaming file bytes.
 
+You can also stream by path:
+
+```text
+http://127.0.0.1:8765/path/teslacam1/RecentClips/name.mp4
+```
+
+`/path/...` resolves each path segment first, then streams the resolved file. It is convenient, but `/file/DRIVE_FILE_ID/...` is the lower-latency path when you already have the file ID from `/api/list`.
+
 ## Current limits
 
 - read-only
@@ -95,5 +112,5 @@ http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4
 - no directory cache yet
 - no auth on the local HTTP server yet
 - no Google Workspace document export yet
-- duplicate folder names make path resolution ambiguous; use `folderId` directly when that happens
+- duplicate names make path resolution ambiguous; use `folderId` or file ID directly when that happens
 - rclone config password input is environment-only for now; no interactive prompt

@@ -29,6 +29,15 @@ type ListResponse struct {
 	IncompleteSearch bool         `json:"incompleteSearch,omitempty"`
 }
 
+type ResolveResponse struct {
+	Path     string     `json:"path"`
+	ID       string     `json:"id"`
+	FolderID string     `json:"folderId,omitempty"`
+	ParentID string     `json:"parentId,omitempty"`
+	IsDir    bool       `json:"isDir"`
+	File     drive.File `json:"file"`
+}
+
 func New(client *drive.Client, rootFolderID string) *Server {
 	return &Server{drive: client, rootFolderID: rootFolderID}
 }
@@ -40,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/list", s.handleList)
 	mux.HandleFunc("/api/resolve", s.handleResolve)
 	mux.HandleFunc("/file/", s.handleFile)
+	mux.HandleFunc("/path/", s.handlePathFile)
 	mux.HandleFunc("/browse/", s.handleBrowse)
 	mux.HandleFunc("/browse", s.handleBrowse)
 	mux.HandleFunc("/", s.handleRoot)
@@ -64,15 +74,16 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := r.URL.Query().Get("path")
-	id, err := s.drive.ResolvePath(r.Context(), p, s.rootFolderID)
+	itemType := r.URL.Query().Get("type")
+	if itemType == "" {
+		itemType = "folder"
+	}
+	item, err := s.drive.ResolveItemPath(r.Context(), p, s.rootFolderID, itemType)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{
-		"path":     p,
-		"folderId": id,
-	})
+	writeJSON(w, http.StatusOK, resolveResponse(item))
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
@@ -165,25 +176,52 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handlePathFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	rest := pathRest(r, "/path/")
+	if rest == "" {
+		http.NotFound(w, r)
+		return
+	}
+	item, err := s.drive.ResolveItemPath(r.Context(), rest, s.rootFolderID, "file")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if r.Method == http.MethodHead {
+		writeFileHead(w, item.File, item.File.Name)
+		return
+	}
+	res, err := s.drive.Download(r.Context(), r.Method, item.File.ID, r.Header.Get("Range"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer res.Body.Close()
+
+	copyHeader(w.Header(), res.Header, "Content-Type")
+	copyHeader(w.Header(), res.Header, "Content-Length")
+	copyHeader(w.Header(), res.Header, "Content-Range")
+	copyHeader(w.Header(), res.Header, "Accept-Ranges")
+	copyHeader(w.Header(), res.Header, "ETag")
+	copyHeader(w.Header(), res.Header, "Last-Modified")
+	if item.File.Name != "" && w.Header().Get("Content-Disposition") == "" {
+		w.Header().Set("Content-Disposition", contentDisposition(item.File.Name))
+	}
+	w.WriteHeader(res.StatusCode)
+	_, _ = io.Copy(w, res.Body)
+}
+
 func (s *Server) handleFileHead(w http.ResponseWriter, r *http.Request, fileID string, name string) {
 	meta, err := s.drive.GetFile(r.Context(), fileID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if meta.MIMEType != "" {
-		w.Header().Set("Content-Type", meta.MIMEType)
-	}
-	if meta.Size != "" {
-		w.Header().Set("Content-Length", meta.Size)
-	}
-	if name == "" {
-		name = meta.Name
-	}
-	if name != "" {
-		w.Header().Set("Content-Disposition", contentDisposition(name))
-	}
-	w.WriteHeader(http.StatusOK)
+	writeFileHead(w, *meta, name)
 }
 
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
@@ -281,6 +319,14 @@ func urlPath(p string) string {
 	return "/" + strings.Join(parts, "/")
 }
 
+func pathRest(r *http.Request, prefix string) string {
+	p := r.URL.EscapedPath()
+	if p == "" {
+		p = r.URL.Path
+	}
+	return strings.TrimPrefix(p, prefix)
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -296,7 +342,9 @@ func writeError(w http.ResponseWriter, err error) {
 	if errors.As(err, &ambiguous) {
 		status = http.StatusConflict
 	}
-	if strings.Contains(err.Error(), "folderId or path is required") || strings.Contains(err.Error(), "invalid list type") {
+	if strings.Contains(err.Error(), "folderId or path is required") ||
+		strings.Contains(err.Error(), "invalid list type") ||
+		strings.Contains(err.Error(), "invalid item type") {
 		status = http.StatusBadRequest
 	}
 	if strings.Contains(err.Error(), "id is required") {
@@ -324,6 +372,37 @@ func listResponse(r *http.Request, folderID string, list *drive.FileList) ListRe
 		resp.Next = r.URL.Path + "?" + q.Encode()
 	}
 	return resp
+}
+
+func resolveResponse(item *drive.ResolvedItem) ResolveResponse {
+	isDir := item.File.MIMEType == drive.FolderMIME
+	resp := ResolveResponse{
+		Path:     item.Path,
+		ID:       item.File.ID,
+		ParentID: item.ParentID,
+		IsDir:    isDir,
+		File:     item.File,
+	}
+	if isDir {
+		resp.FolderID = item.File.ID
+	}
+	return resp
+}
+
+func writeFileHead(w http.ResponseWriter, meta drive.File, name string) {
+	if meta.MIMEType != "" {
+		w.Header().Set("Content-Type", meta.MIMEType)
+	}
+	if meta.Size != "" {
+		w.Header().Set("Content-Length", meta.Size)
+	}
+	if name == "" {
+		name = meta.Name
+	}
+	if name != "" {
+		w.Header().Set("Content-Disposition", contentDisposition(name))
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func intParam(r *http.Request, name string, fallback int) int {

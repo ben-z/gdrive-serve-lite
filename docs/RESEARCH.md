@@ -54,13 +54,13 @@ Implication: default to unsorted unless the caller asks for order. The API shoul
 
 ### Path resolution
 
-Drive allows duplicate names in the same parent folder. Paths are therefore a convenience layer, not a reliable identity. The server should resolve each segment by querying:
+Drive allows duplicate names in the same parent folder. Paths are therefore a convenience layer, not a reliable identity. The server resolves intermediate segments as folders by querying:
 
 ```text
 trashed=false and '<parent-id>' in parents and name = '<segment>' and mimeType = 'application/vnd.google-apps.folder'
 ```
 
-If a segment has more than one match, return a conflict and tell the caller to use `folderId`.
+For the leaf segment, `/api/resolve` can resolve `type=folder`, `type=file`, or `type=any`. The path streaming endpoint resolves the leaf as `type=file`. Each lookup asks for two matches so ambiguity can be detected without scanning all duplicates. If a segment has more than one match, return a conflict and tell the caller to use `folderId` or a file ID directly.
 
 ### Downloads and range requests
 
@@ -120,6 +120,7 @@ That rclone-generated encrypted fixture is covered by unit tests.
 - basic HTML browser
 - file streaming with Range forwarding
 - metadata endpoint separated from media streaming, so GET reads stay one upstream request
+- optional path-based file streaming for convenience, with file-ID streaming kept as the fast path
 
 ## Local timings that motivated this
 
@@ -138,8 +139,9 @@ Against `gdrive-ro:/teslacam1/RecentClips`:
 ```text
 GET /api/list?folderId=...&type=all|files|dirs&pageSize=1000&limit=1000&pageToken=...&orderBy=...
 GET /api/file?id=...
-GET /api/resolve?path=/a/b/c
+GET /api/resolve?path=/a/b/c&type=folder|file|any
 GET /file/{fileId}/{optional-name}
+GET /path/{path-to-file}
 GET /browse/{path}
 GET /healthz
 ```
@@ -151,7 +153,6 @@ GET /healthz
 - export support for Google Workspace docs
 - thumbnail endpoint
 - stricter sort/filter allowlist
-- file metadata endpoint
 - persistent token store independent of rclone
 - benchmark command that compares rclone and native Drive calls
 - optional compatibility mode for rclone-like directory templates
