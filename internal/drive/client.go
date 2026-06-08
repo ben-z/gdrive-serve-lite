@@ -418,7 +418,7 @@ func (c *Client) ExportWithResourceKey(ctx context.Context, id string, mimeType 
 		return nil, err
 	}
 	setResourceKeyHeader(req, id, resourceKey)
-	return c.do(req)
+	return c.doRaw(req)
 }
 
 func (c *Client) findItemsByName(ctx context.Context, parentID, parentResourceKey, name string, itemType string) ([]File, error) {
