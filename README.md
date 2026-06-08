@@ -8,6 +8,7 @@ The first version is intentionally narrow:
 - folder and file path resolution as a convenience
 - file download/streaming by Drive file ID
 - optional file download/streaming by Drive path
+- Google Workspace document export
 - HTTP `Range` forwarding for media seeking
 - optional reuse of an rclone remote's OAuth config
 
@@ -83,6 +84,12 @@ Fetch file metadata:
 curl 'http://127.0.0.1:8765/api/file?id=DRIVE_FILE_ID'
 ```
 
+Fetch supported export formats for a Google Workspace file:
+
+```sh
+curl 'http://127.0.0.1:8765/api/export-formats?id=GOOGLE_DOC_FILE_ID'
+```
+
 Browse in a browser:
 
 ```text
@@ -97,13 +104,23 @@ http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4
 
 `GET /file/...` forwards directly to Drive `alt=media` and preserves `Range`, so media seeking is a single upstream Drive request. `HEAD /file/...` uses one metadata request and returns length/type headers without streaming file bytes.
 
+Export a Google Docs/Sheets/Slides file:
+
+```text
+http://127.0.0.1:8765/export/GOOGLE_DOC_FILE_ID/name.docx
+http://127.0.0.1:8765/export/GOOGLE_DOC_FILE_ID/name.pdf?format=pdf
+```
+
+If no `format` or `mimeType` is provided, the server defaults to rclone-like export formats: Docs as `docx`, Sheets as `xlsx`, Slides as `pptx`, Drawings as `svg`, Apps Script as `json`, and Google Vids as `mp4`. Drive exports do not support HTTP range reads, so `Range` requests are rejected for `/export/...`.
+
 You can also stream by path:
 
 ```text
 http://127.0.0.1:8765/path/Videos/Clips/name.mp4
+http://127.0.0.1:8765/path/Documents/Meeting%20Notes?format=pdf
 ```
 
-`/path/...` resolves each path segment first, then streams the resolved file. It is convenient, but `/file/DRIVE_FILE_ID/...` is the lower-latency path when you already have the file ID from `/api/list`.
+`/path/...` resolves each path segment first, then streams or exports the resolved file. It is convenient, but `/file/DRIVE_FILE_ID/...` is the lower-latency path for blob files when you already have the file ID from `/api/list`.
 
 ## Current limits
 
@@ -111,6 +128,5 @@ http://127.0.0.1:8765/path/Videos/Clips/name.mp4
 - Google Drive only
 - no directory cache yet
 - no auth on the local HTTP server yet
-- no Google Workspace document export yet
 - duplicate names make path resolution ambiguous; use `folderId` or file ID directly when that happens
 - rclone config password input is environment-only for now; no interactive prompt

@@ -48,6 +48,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/file", s.handleFileMetadata)
 	mux.HandleFunc("/api/list", s.handleList)
 	mux.HandleFunc("/api/resolve", s.handleResolve)
+	mux.HandleFunc("/api/export-formats", s.handleExportFormats)
+	mux.HandleFunc("/export/", s.handleExport)
 	mux.HandleFunc("/file/", s.handleFile)
 	mux.HandleFunc("/path/", s.handlePathFile)
 	mux.HandleFunc("/browse/", s.handleBrowse)
@@ -130,6 +132,66 @@ func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, file)
 }
 
+func (s *Server) handleExportFormats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		writeError(w, errors.New("id is required"))
+		return
+	}
+	file, err := s.drive.GetFile(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":            file.ID,
+		"name":          file.Name,
+		"mimeType":      file.MIMEType,
+		"defaultExport": file.DefaultExport,
+		"formats":       file.ExportFormats,
+	})
+}
+
+func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/export/")
+	if rest == "" {
+		http.NotFound(w, r)
+		return
+	}
+	rawID, _, _ := strings.Cut(rest, "/")
+	fileID, err := url.PathUnescape(rawID)
+	if err != nil || fileID == "" {
+		http.Error(w, "invalid file ID", http.StatusBadRequest)
+		return
+	}
+	_, rawName, _ := strings.Cut(rest, "/")
+	name, _ := url.PathUnescape(rawName)
+
+	file, err := s.drive.GetFile(r.Context(), fileID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	format, err := exportFormatFromRequest(r, *file)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if r.Method == http.MethodHead {
+		writeExportHead(w, *file, format, name)
+		return
+	}
+	s.streamExport(w, r, *file, format, name)
+}
+
 func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -192,7 +254,25 @@ func (s *Server) handlePathFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodHead {
+		if drive.IsWorkspaceFile(item.File) || exportRequested(r) {
+			format, err := exportFormatFromRequest(r, item.File)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			writeExportHead(w, item.File, format, item.File.Name)
+			return
+		}
 		writeFileHead(w, item.File, item.File.Name)
+		return
+	}
+	if drive.IsWorkspaceFile(item.File) || exportRequested(r) {
+		format, err := exportFormatFromRequest(r, item.File)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		s.streamExport(w, r, item.File, format, item.File.Name)
 		return
 	}
 	res, err := s.drive.Download(r.Context(), r.Method, item.File.ID, r.Header.Get("Range"))
@@ -222,6 +302,35 @@ func (s *Server) handleFileHead(w http.ResponseWriter, r *http.Request, fileID s
 		return
 	}
 	writeFileHead(w, *meta, name)
+}
+
+func (s *Server) streamExport(w http.ResponseWriter, r *http.Request, file drive.File, format drive.ExportFormat, name string) {
+	if r.Header.Get("Range") != "" {
+		writeError(w, errors.New("Range is not supported for Drive exports"))
+		return
+	}
+	res, err := s.drive.Export(r.Context(), file.ID, format.MIMEType)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer res.Body.Close()
+
+	copyHeader(w.Header(), res.Header, "Content-Type")
+	copyHeader(w.Header(), res.Header, "Content-Length")
+	copyHeader(w.Header(), res.Header, "ETag")
+	copyHeader(w.Header(), res.Header, "Last-Modified")
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", format.MIMEType)
+	}
+	if name == "" {
+		name = file.Name
+	}
+	if name != "" && w.Header().Get("Content-Disposition") == "" {
+		w.Header().Set("Content-Disposition", contentDisposition(exportName(name, format)))
+	}
+	w.WriteHeader(res.StatusCode)
+	_, _ = io.Copy(w, res.Body)
 }
 
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
@@ -285,6 +394,9 @@ func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p string, 
 			continue
 		}
 		link := "/file/" + url.PathEscape(f.ID) + "/" + url.PathEscape(f.Name)
+		if f.DefaultExport != nil {
+			link = "/export/" + url.PathEscape(f.ID) + "/" + url.PathEscape(exportName(f.Name, *f.DefaultExport))
+		}
 		fmt.Fprintf(w, "<tr><td><a href=\"%s\">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>", html.EscapeString(link), name, html.EscapeString(f.MIMEType), html.EscapeString(f.Size), html.EscapeString(f.ModifiedTime))
 	}
 	fmt.Fprint(w, "</tbody></table>")
@@ -338,13 +450,17 @@ func writeError(w http.ResponseWriter, err error) {
 	if errors.Is(err, drive.ErrNotFound) {
 		status = http.StatusNotFound
 	}
+	if errors.Is(err, drive.ErrUnsupportedExport) {
+		status = http.StatusBadRequest
+	}
 	var ambiguous *drive.AmbiguousPathError
 	if errors.As(err, &ambiguous) {
 		status = http.StatusConflict
 	}
 	if strings.Contains(err.Error(), "folderId or path is required") ||
 		strings.Contains(err.Error(), "invalid list type") ||
-		strings.Contains(err.Error(), "invalid item type") {
+		strings.Contains(err.Error(), "invalid item type") ||
+		strings.Contains(err.Error(), "Range is not supported") {
 		status = http.StatusBadRequest
 	}
 	if strings.Contains(err.Error(), "id is required") {
@@ -403,6 +519,50 @@ func writeFileHead(w http.ResponseWriter, meta drive.File, name string) {
 		w.Header().Set("Content-Disposition", contentDisposition(name))
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func writeExportHead(w http.ResponseWriter, file drive.File, format drive.ExportFormat, name string) {
+	w.Header().Set("Content-Type", format.MIMEType)
+	if name == "" {
+		name = file.Name
+	}
+	if name != "" {
+		w.Header().Set("Content-Disposition", contentDisposition(exportName(name, format)))
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func exportRequested(r *http.Request) bool {
+	return r.URL.Query().Get("format") != "" || r.URL.Query().Get("mimeType") != ""
+}
+
+func exportFormatFromRequest(r *http.Request, file drive.File) (drive.ExportFormat, error) {
+	if !drive.IsWorkspaceFile(file) {
+		return drive.ExportFormat{}, fmt.Errorf("%w: %q is not a Google Workspace file", drive.ErrUnsupportedExport, file.Name)
+	}
+	raw := r.URL.Query().Get("mimeType")
+	if raw == "" {
+		raw = r.URL.Query().Get("format")
+	}
+	if raw != "" {
+		return drive.ExportFormatFor(raw)
+	}
+	format, ok := drive.DefaultExportFormat(file)
+	if !ok {
+		return drive.ExportFormat{}, fmt.Errorf("%w: no default export format for MIME type %q", drive.ErrUnsupportedExport, file.MIMEType)
+	}
+	return format, nil
+}
+
+func exportName(name string, format drive.ExportFormat) string {
+	if name == "" || format.Extension == "" {
+		return name
+	}
+	suffix := "." + strings.ToLower(format.Extension)
+	if strings.HasSuffix(strings.ToLower(name), suffix) {
+		return name
+	}
+	return name + "." + format.Extension
 }
 
 func intParam(r *http.Request, name string, fallback int) int {
