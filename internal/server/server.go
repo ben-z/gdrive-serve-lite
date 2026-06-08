@@ -12,6 +12,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"gdrive-serve-lite/internal/drive"
 )
@@ -250,7 +251,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodHead {
-		writeExportHead(w, *file, format, name)
+		writeExportHead(w, r, *file, format, name)
 		return
 	}
 	s.streamExport(w, r, *file, format, name, r.URL.Query().Get("resourceKey"))
@@ -330,10 +331,10 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 				writeError(w, err)
 				return
 			}
-			writeExportHead(w, file, format, name)
+			writeExportHead(w, r, file, format, name)
 			return
 		}
-		writeFileHead(w, file, name)
+		writeFileHead(w, r, file, name)
 		return
 	}
 	if isWorkspaceReadable(file) || exportRequested(r) {
@@ -402,7 +403,7 @@ func (s *Server) handleFileHead(w http.ResponseWriter, r *http.Request, fileID s
 		writeError(w, err)
 		return
 	}
-	writeFileHead(w, *meta, name)
+	writeFileHead(w, r, *meta, name)
 }
 
 func (s *Server) streamExport(w http.ResponseWriter, r *http.Request, file drive.File, format drive.ExportFormat, name string, resourceKeyOverride string) {
@@ -667,7 +668,10 @@ func resolveResponse(item *drive.ResolvedItem) ResolveResponse {
 	return resp
 }
 
-func writeFileHead(w http.ResponseWriter, meta drive.File, name string) {
+func writeFileHead(w http.ResponseWriter, r *http.Request, meta drive.File, name string) {
+	if writeNotModifiedHead(w, r, meta.ModifiedTime) {
+		return
+	}
 	if meta.MIMEType != "" {
 		w.Header().Set("Content-Type", meta.MIMEType)
 	}
@@ -683,7 +687,10 @@ func writeFileHead(w http.ResponseWriter, meta drive.File, name string) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func writeExportHead(w http.ResponseWriter, file drive.File, format drive.ExportFormat, name string) {
+func writeExportHead(w http.ResponseWriter, r *http.Request, file drive.File, format drive.ExportFormat, name string) {
+	if writeNotModifiedHead(w, r, file.ModifiedTime) {
+		return
+	}
 	w.Header().Set("Content-Type", format.MIMEType)
 	if name == "" {
 		name = file.Name
@@ -692,6 +699,37 @@ func writeExportHead(w http.ResponseWriter, file drive.File, format drive.Export
 		w.Header().Set("Content-Disposition", contentDisposition(exportName(name, format)))
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func writeNotModifiedHead(w http.ResponseWriter, r *http.Request, modifiedTime string) bool {
+	modified, ok := driveModifiedHTTPTime(modifiedTime)
+	if !ok {
+		return false
+	}
+	w.Header().Set("Last-Modified", modified.Format(http.TimeFormat))
+	if r.Header.Get("If-None-Match") != "" {
+		return false
+	}
+	since, err := http.ParseTime(r.Header.Get("If-Modified-Since"))
+	if err != nil {
+		return false
+	}
+	if modified.After(since) {
+		return false
+	}
+	w.WriteHeader(http.StatusNotModified)
+	return true
+}
+
+func driveModifiedHTTPTime(value string) (time.Time, bool) {
+	if value == "" {
+		return time.Time{}, false
+	}
+	modified, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return modified.UTC().Truncate(time.Second), true
 }
 
 func exportRequested(r *http.Request) bool {
