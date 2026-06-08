@@ -274,6 +274,10 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if r.Header.Get("Range") != "" {
+		writeError(w, errors.New("Range is not supported for Drive exports"))
+		return
+	}
 	rest := strings.TrimPrefix(r.URL.Path, "/export/")
 	if rest == "" {
 		http.NotFound(w, r)
@@ -380,6 +384,10 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 		return
 	}
 	if isWorkspaceReadable(file) || exportRequested(r) {
+		if r.Header.Get("Range") != "" {
+			writeError(w, errors.New("Range is not supported for Drive exports"))
+			return
+		}
 		format, err := exportFormatFromRequest(r, exportSourceFile(file))
 		if err != nil {
 			writeError(w, err)
