@@ -906,8 +906,11 @@ func withResourceKey(link string, resourceKey string) string {
 }
 
 func copyHeader(dst http.Header, src http.Header, key string) {
-	if value := src.Get(key); value != "" {
-		dst.Set(key, value)
+	if values := src.Values(key); len(values) > 0 {
+		dst.Del(key)
+		for _, value := range values {
+			dst.Add(key, value)
+		}
 	}
 }
 
