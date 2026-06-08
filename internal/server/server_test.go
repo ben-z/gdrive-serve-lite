@@ -505,6 +505,38 @@ func TestExportEndpointDefaultsToRcloneLikeFormat(t *testing.T) {
 	}
 }
 
+func TestExportEndpointForwardsResourceKey(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "doc-1/resource-key-1" {
+			t.Fatalf("request %d resource key header = %q", calls, got)
+		}
+		switch calls {
+		case 1:
+			return jsonResponse(http.StatusOK, `{"id":"doc-1","name":"Notes","mimeType":"application/vnd.google-apps.document"}`), nil
+		case 2:
+			if req.URL.Path != "/drive/v3/files/doc-1/export" {
+				t.Fatalf("path = %q", req.URL.Path)
+			}
+			return textResponse(http.StatusOK, "docx-bytes"), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/export/doc-1/Notes?resourceKey=resource-key-1", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
 func TestExportEndpointRejectsRange(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {
