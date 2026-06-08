@@ -96,6 +96,7 @@ type File struct {
 	ExportFormats   []ExportFormat    `json:"exportFormats,omitempty"`
 	DefaultExport   *ExportFormat     `json:"defaultExport,omitempty"`
 	ShortcutDetails *ShortcutDetails  `json:"shortcutDetails,omitempty"`
+	URL             string            `json:"url,omitempty"`
 }
 
 type ShortcutDetails struct {
