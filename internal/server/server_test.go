@@ -579,6 +579,9 @@ func TestFileEndpointForwardsConditionalHeaders(t *testing.T) {
 	if rec.Header().Get("ETag") != `"etag-1"` {
 		t.Fatalf("ETag = %q", rec.Header().Get("ETag"))
 	}
+	if rec.Header().Get("Content-Disposition") != "" {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
 }
 
 func TestFileEndpointPassesThroughRangeError(t *testing.T) {
@@ -609,6 +612,9 @@ func TestFileEndpointPassesThroughRangeError(t *testing.T) {
 	}
 	if rec.Header().Get("Content-Range") != "bytes */100" {
 		t.Fatalf("Content-Range = %q", rec.Header().Get("Content-Range"))
+	}
+	if rec.Header().Get("Content-Disposition") != "" {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
 	}
 	if rec.Body.String() != "range outside file" {
 		t.Fatalf("body = %q", rec.Body.String())

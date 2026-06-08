@@ -293,7 +293,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	copyHeader(w.Header(), res.Header, "Accept-Ranges")
 	copyHeader(w.Header(), res.Header, "ETag")
 	copyHeader(w.Header(), res.Header, "Last-Modified")
-	if name != "" && w.Header().Get("Content-Disposition") == "" {
+	if isReadSuccess(res.StatusCode) && name != "" && w.Header().Get("Content-Disposition") == "" {
 		w.Header().Set("Content-Disposition", contentDisposition(name))
 	}
 	w.WriteHeader(res.StatusCode)
@@ -357,7 +357,7 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 	copyHeader(w.Header(), res.Header, "Accept-Ranges")
 	copyHeader(w.Header(), res.Header, "ETag")
 	copyHeader(w.Header(), res.Header, "Last-Modified")
-	if name != "" && w.Header().Get("Content-Disposition") == "" {
+	if isReadSuccess(res.StatusCode) && name != "" && w.Header().Get("Content-Disposition") == "" {
 		w.Header().Set("Content-Disposition", contentDisposition(name))
 	}
 	w.WriteHeader(res.StatusCode)
@@ -423,13 +423,13 @@ func (s *Server) streamExport(w http.ResponseWriter, r *http.Request, file drive
 	copyHeader(w.Header(), res.Header, "Content-Length")
 	copyHeader(w.Header(), res.Header, "ETag")
 	copyHeader(w.Header(), res.Header, "Last-Modified")
-	if res.StatusCode < http.StatusBadRequest && w.Header().Get("Content-Type") == "" {
+	if isReadSuccess(res.StatusCode) && w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", format.MIMEType)
 	}
 	if name == "" {
 		name = file.Name
 	}
-	if res.StatusCode < http.StatusBadRequest && name != "" && w.Header().Get("Content-Disposition") == "" {
+	if isReadSuccess(res.StatusCode) && name != "" && w.Header().Get("Content-Disposition") == "" {
 		w.Header().Set("Content-Disposition", contentDisposition(exportName(name, format)))
 	}
 	w.WriteHeader(res.StatusCode)
@@ -806,6 +806,10 @@ func copyHeader(dst http.Header, src http.Header, key string) {
 	if value := src.Get(key); value != "" {
 		dst.Set(key, value)
 	}
+}
+
+func isReadSuccess(status int) bool {
+	return status >= http.StatusOK && status < http.StatusMultipleChoices
 }
 
 func contentDisposition(name string) string {
