@@ -93,6 +93,7 @@ func main() {
 func driveHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = responseHeaderTimeout
+	transport.DisableCompression = true
 	return &http.Client{Transport: transport}
 }
 
