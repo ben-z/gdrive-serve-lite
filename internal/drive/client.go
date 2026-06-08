@@ -68,6 +68,12 @@ type ShortcutDetails struct {
 	TargetMIMEType string `json:"targetMimeType,omitempty"`
 }
 
+type ResolvedItem struct {
+	Path     string `json:"path"`
+	ParentID string `json:"parentId,omitempty"`
+	File     File   `json:"file"`
+}
+
 type FileList struct {
 	Files            []File `json:"files"`
 	NextPageToken    string `json:"nextPageToken,omitempty"`
@@ -169,34 +175,83 @@ func (c *Client) listChildrenPage(ctx context.Context, opts ListOptions, pageTok
 }
 
 func (c *Client) ResolvePath(ctx context.Context, p string, rootFolderID string) (string, error) {
+	item, err := c.ResolveItemPath(ctx, p, rootFolderID, "folder")
+	if err != nil {
+		return "", err
+	}
+	return item.File.ID, nil
+}
+
+func (c *Client) ResolveItemPath(ctx context.Context, p string, rootFolderID string, itemType string) (*ResolvedItem, error) {
+	itemType, err := normalizeItemType(itemType)
+	if err != nil {
+		return nil, err
+	}
 	p = strings.TrimSpace(p)
 	if p == "" || p == "/" {
-		return rootFolderID, nil
+		if itemType == "file" {
+			return nil, fmt.Errorf("%w: file at root path", ErrNotFound)
+		}
+		return &ResolvedItem{
+			Path: "/",
+			File: File{
+				ID:       rootFolderID,
+				Name:     "/",
+				MIMEType: FolderMIME,
+			},
+		}, nil
 	}
 	parts := strings.Split(strings.Trim(p, "/"), "/")
 	parent := rootFolderID
-	for _, raw := range parts {
+	resolvedParent := ""
+	cleanParts := make([]string, 0, len(parts))
+	var resolved File
+	for i, raw := range parts {
 		segment, err := url.PathUnescape(raw)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		if segment == "" {
 			continue
 		}
-		matches, err := c.findFolderByName(ctx, parent, segment)
+		cleanParts = append(cleanParts, segment)
+		leafType := "folder"
+		if i == len(parts)-1 {
+			leafType = itemType
+		}
+		matches, err := c.findItemsByName(ctx, parent, segment, leafType)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		switch len(matches) {
 		case 0:
-			return "", fmt.Errorf("%w: folder %q under %q", ErrNotFound, segment, parent)
+			return nil, fmt.Errorf("%w: %s %q under %q", ErrNotFound, typeLabel(leafType), segment, parent)
 		case 1:
+			resolved = matches[0]
+			resolvedParent = parent
 			parent = matches[0].ID
 		default:
-			return "", &AmbiguousPathError{Segment: segment, Parent: parent, Count: len(matches)}
+			return nil, &AmbiguousPathError{Segment: segment, Parent: parent, Count: len(matches)}
 		}
 	}
-	return parent, nil
+	if len(cleanParts) == 0 {
+		if itemType == "file" {
+			return nil, fmt.Errorf("%w: file at root path", ErrNotFound)
+		}
+		return &ResolvedItem{
+			Path: "/",
+			File: File{
+				ID:       rootFolderID,
+				Name:     "/",
+				MIMEType: FolderMIME,
+			},
+		}, nil
+	}
+	return &ResolvedItem{
+		Path:     "/" + strings.Join(cleanParts, "/"),
+		ParentID: resolvedParent,
+		File:     resolved,
+	}, nil
 }
 
 func (c *Client) GetFile(ctx context.Context, id string) (*File, error) {
@@ -232,11 +287,22 @@ func (c *Client) Download(ctx context.Context, method string, id string, rangeHe
 	return c.do(req)
 }
 
-func (c *Client) findFolderByName(ctx context.Context, parentID, name string) ([]File, error) {
-	q := "trashed=false and " + quote(parentID) + " in parents and name = " + quote(name) + " and mimeType = " + quote(FolderMIME)
+func (c *Client) findItemsByName(ctx context.Context, parentID, name string, itemType string) ([]File, error) {
+	itemType, err := normalizeItemType(itemType)
+	if err != nil {
+		return nil, err
+	}
+	q := "trashed=false and " + quote(parentID) + " in parents and name = " + quote(name)
+	switch itemType {
+	case "any":
+	case "file":
+		q += " and mimeType != " + quote(FolderMIME)
+	case "folder":
+		q += " and mimeType = " + quote(FolderMIME)
+	}
 	values := c.baseListValues()
 	values.Set("q", q)
-	values.Set("fields", "files(id,name,mimeType)")
+	values.Set("fields", "files(id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,shortcutDetails)")
 	values.Set("pageSize", "2")
 	var out FileList
 	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), &out); err != nil {
@@ -385,6 +451,30 @@ func quote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `'`, `\'`)
 	return "'" + s + "'"
+}
+
+func normalizeItemType(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "any", "all":
+		return "any", nil
+	case "file", "files":
+		return "file", nil
+	case "folder", "folders", "dir", "dirs", "directory", "directories":
+		return "folder", nil
+	default:
+		return "", fmt.Errorf("invalid item type %q", s)
+	}
+}
+
+func typeLabel(itemType string) string {
+	switch itemType {
+	case "file":
+		return "file"
+	case "folder":
+		return "folder"
+	default:
+		return "item"
+	}
 }
 
 func normalizePageSize(n int) int {

@@ -168,6 +168,148 @@ func TestAPIFileMetadata(t *testing.T) {
 	}
 }
 
+func TestAPIResolveFile(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		query := req.URL.Query().Get("q")
+		switch calls {
+		case 1:
+			if !strings.Contains(query, "'root-folder' in parents") ||
+				!strings.Contains(query, "name = 'folder'") ||
+				!strings.Contains(query, "mimeType = '"+drive.FolderMIME+"'") {
+				t.Fatalf("folder query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			if !strings.Contains(query, "'folder-1' in parents") ||
+				!strings.Contains(query, "name = 'video.mp4'") ||
+				!strings.Contains(query, "mimeType != '"+drive.FolderMIME+"'") {
+				t.Fatalf("file query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}]}`), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/resolve?path=/folder/video.mp4&type=file", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body ResolveResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.ID != "file-1" || body.FolderID != "" || body.ParentID != "folder-1" || body.IsDir {
+		t.Fatalf("body = %+v", body)
+	}
+	if body.File.Name != "video.mp4" {
+		t.Fatalf("file = %+v", body.File)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestPathEndpointStreamsResolvedFile(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "'folder-1' in parents") ||
+				!strings.Contains(query, "name = 'video.mp4'") ||
+				!strings.Contains(query, "mimeType != '"+drive.FolderMIME+"'") {
+				t.Fatalf("file query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}]}`), nil
+		case 3:
+			if req.URL.Path != "/drive/v3/files/file-1" {
+				t.Fatalf("path = %q", req.URL.Path)
+			}
+			if req.URL.Query().Get("alt") != "media" {
+				t.Fatalf("alt = %q", req.URL.Query().Get("alt"))
+			}
+			if req.Header.Get("Range") != "bytes=1-3" {
+				t.Fatalf("Range = %q", req.Header.Get("Range"))
+			}
+			resp := textResponse(http.StatusPartialContent, "bcd")
+			resp.Header.Set("Content-Type", "video/mp4")
+			resp.Header.Set("Content-Length", "3")
+			resp.Header.Set("Content-Range", "bytes 1-3/10")
+			return resp, nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/path/folder/video.mp4", nil)
+	req.Header.Set("Range", "bytes=1-3")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+	if rec.Body.String() != "bcd" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if rec.Header().Get("Content-Range") != "bytes 1-3/10" {
+		t.Fatalf("Content-Range = %q", rec.Header().Get("Content-Range"))
+	}
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), "video.mp4") {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+}
+
+func TestPathEndpointHeadUsesResolvedMetadata(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if req.URL.Query().Get("alt") != "" {
+			t.Fatalf("unexpected media request alt=%q", req.URL.Query().Get("alt"))
+		}
+		switch calls {
+		case 1:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}]}`), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodHead, "/path/folder/video.mp4", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if rec.Header().Get("Content-Length") != "10" {
+		t.Fatalf("Content-Length = %q", rec.Header().Get("Content-Length"))
+	}
+	if rec.Header().Get("Content-Type") != "video/mp4" {
+		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), "video.mp4") {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+}
+
 func BenchmarkAPIListSinglePage(b *testing.B) {
 	body := `{"files":[`
 	for i := range 1000 {
