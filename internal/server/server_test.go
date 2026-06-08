@@ -425,6 +425,27 @@ func TestRootPathHTMLLinksPreserveResourceKeysAndShortcutTargets(t *testing.T) {
 	}
 }
 
+func TestRootPathHTMLFolderLinksEscapeSlashInNames(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{
+			"files":[
+				{"id":"folder-1","name":"A/B?C","mimeType":"application/vnd.google-apps.folder"}
+			]
+		}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "/browse/A%2FB%3FC?folderId=folder-1") {
+		t.Fatalf("body missing escaped folder link:\n%s", body)
+	}
+}
+
 func TestRootCompatibleFolderPathListsFolder(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {
