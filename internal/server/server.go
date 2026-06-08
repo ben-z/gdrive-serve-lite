@@ -156,7 +156,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	p := compatiblePath(r)
@@ -179,7 +179,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		methodNotAllowed(w, http.MethodGet)
 		return
 	}
 	p := r.URL.Query().Get("path")
@@ -197,7 +197,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		methodNotAllowed(w, http.MethodGet)
 		return
 	}
 	folder, err := s.folderFromRequest(r)
@@ -224,7 +224,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		methodNotAllowed(w, http.MethodGet)
 		return
 	}
 	id := r.URL.Query().Get("id")
@@ -242,7 +242,7 @@ func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleExportFormats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		methodNotAllowed(w, http.MethodGet)
 		return
 	}
 	id := r.URL.Query().Get("id")
@@ -271,7 +271,7 @@ func (s *Server) handleExportFormats(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	if r.Header.Get("Range") != "" {
@@ -311,7 +311,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	rest := strings.TrimPrefix(r.URL.Path, "/file/")
@@ -352,7 +352,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePathFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	rest := pathRest(r, "/path/")
@@ -477,7 +477,7 @@ func (s *Server) streamExport(w http.ResponseWriter, r *http.Request, file drive
 
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	folder, err := s.folderFromRequest(r)
@@ -625,6 +625,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func methodNotAllowed(w http.ResponseWriter, methods ...string) {
+	w.Header().Set("Allow", strings.Join(methods, ", "))
+	w.WriteHeader(http.StatusMethodNotAllowed)
 }
 
 func writeError(w http.ResponseWriter, err error) {
