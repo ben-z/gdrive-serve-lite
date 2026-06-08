@@ -28,6 +28,7 @@ func main() {
 	httpUser := flag.String("user", "", "HTTP basic auth username; requires --pass")
 	httpPass := flag.String("pass", "", "HTTP basic auth password; requires --user")
 	allowOrigin := flag.String("allow-origin", "", "optional CORS origin to allow, for example http://localhost:3000 or *")
+	baseURL := flag.String("baseurl", "", "optional URL path prefix to serve from, for example /gdrive")
 	flag.Parse()
 	if (*httpUser == "") != (*httpPass == "") {
 		log.Fatal("--user and --pass must be set together")
@@ -78,6 +79,7 @@ func main() {
 	app := server.NewWithRootResourceKey(client, effectiveRootID, effectiveRootResourceKey)
 	app.SetBasicAuth(*httpUser, *httpPass)
 	app.SetAllowOrigin(*allowOrigin)
+	app.SetBaseURL(*baseURL)
 	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           app.Handler(),

@@ -246,6 +246,107 @@ func TestAPIListOmitsReadyEntryURLsByDefault(t *testing.T) {
 	}
 }
 
+func TestBaseURLPrefixesAPIListLinks(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/drive/v3/files" {
+			t.Fatalf("Drive path = %q", req.URL.Path)
+		}
+		return jsonResponse(http.StatusOK, `{
+			"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}],
+			"nextPageToken":"tok-2"
+		}`), nil
+	})
+	app.SetBaseURL("/gdrive/")
+
+	req := httptest.NewRequest(http.MethodGet, "/gdrive/api/list?folderId=root-folder&pageSize=1&limit=1&links=1", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(body.Next, "/gdrive/api/list?") ||
+		!strings.Contains(body.Next, "pageToken=tok-2") {
+		t.Fatalf("Next = %q", body.Next)
+	}
+	if len(body.Files) != 1 || body.Files[0].URL != "/gdrive/file/file-1/video.mp4" {
+		t.Fatalf("files = %+v", body.Files)
+	}
+}
+
+func TestBaseURLPrefixesBrowseLinks(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{
+			"files":[
+				{"id":"folder-1","name":"Shared","mimeType":"application/vnd.google-apps.folder"},
+				{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}
+			],
+			"nextPageToken":"tok-2"
+		}`), nil
+	})
+	app.SetBaseURL("gdrive")
+
+	req := httptest.NewRequest(http.MethodGet, "/gdrive/?pageSize=1&limit=1", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"/gdrive/browse/Shared?folderId=folder-1",
+		"/gdrive/file/file-1/video.mp4",
+		"/gdrive/browse/?folderId=root-folder&amp;limit=1&amp;pageSize=1&amp;pageToken=tok-2",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestBaseURLRejectsUnprefixedRequests(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected Drive request: %s", req.URL.String())
+		return nil, nil
+	})
+	app.SetBaseURL("/gdrive")
+
+	for _, path := range []string{
+		"/api/list?folderId=root-folder",
+		"/gdrive-other/api/list?folderId=root-folder",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestBasePathMiddlewarePreservesRawEscapedPath(t *testing.T) {
+	handler := basePathMiddleware("/gdrive", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/browse/a/b" {
+			t.Fatalf("Path = %q", r.URL.Path)
+		}
+		if got := escapedPath(r); got != "/browse/a%2Fb" {
+			t.Fatalf("escaped path = %q", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/gdrive/browse/a%2Fb", nil)
+	req.URL.Path = "/gdrive/browse/a/b"
+	req.URL.RawPath = "/gdrive/browse/a%2Fb"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	tests := []struct {
 		path  string
