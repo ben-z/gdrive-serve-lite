@@ -157,6 +157,36 @@ func TestDownloadForwardsRange(t *testing.T) {
 	}
 }
 
+func TestDownloadForwardsConditionalHeaders(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Header.Get("If-None-Match") != `"etag-1"` {
+				t.Fatalf("If-None-Match = %q", req.Header.Get("If-None-Match"))
+			}
+			if req.Header.Get("If-Modified-Since") != "Mon, 08 Jun 2026 07:00:00 GMT" {
+				t.Fatalf("If-Modified-Since = %q", req.Header.Get("If-Modified-Since"))
+			}
+			if req.Header.Get("Cookie") != "" {
+				t.Fatalf("Cookie should not be forwarded: %q", req.Header.Get("Cookie"))
+			}
+			return textResponse(http.StatusNotModified, ""), nil
+		}),
+	})
+
+	headers := http.Header{}
+	headers.Set("If-None-Match", `"etag-1"`)
+	headers.Set("If-Modified-Since", "Mon, 08 Jun 2026 07:00:00 GMT")
+	headers.Set("Cookie", "local=only")
+	resp, err := client.DownloadWithResourceKeyAndHeaders(context.Background(), http.MethodGet, "file-1", headers, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+}
+
 func TestDownloadForwardsResourceKey(t *testing.T) {
 	client := NewClientWithHTTPClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

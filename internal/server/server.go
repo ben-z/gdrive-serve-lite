@@ -276,7 +276,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.drive.DownloadWithResourceKey(r.Context(), r.Method, fileID, r.Header.Get("Range"), r.URL.Query().Get("resourceKey"))
+	res, err := s.drive.DownloadWithResourceKeyAndHeaders(r.Context(), r.Method, fileID, r.Header, r.URL.Query().Get("resourceKey"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -340,7 +340,7 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 		s.streamExport(w, r, file, format, name, "")
 		return
 	}
-	res, err := s.drive.DownloadWithResourceKey(r.Context(), r.Method, id, r.Header.Get("Range"), resourceKey)
+	res, err := s.drive.DownloadWithResourceKeyAndHeaders(r.Context(), r.Method, id, r.Header, resourceKey)
 	if err != nil {
 		writeError(w, err)
 		return
