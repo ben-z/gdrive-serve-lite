@@ -60,6 +60,8 @@ type File struct {
 	WebContentLink  string            `json:"webContentLink,omitempty"`
 	ResourceKey     string            `json:"resourceKey,omitempty"`
 	ExportLinks     map[string]string `json:"exportLinks,omitempty"`
+	ExportFormats   []ExportFormat    `json:"exportFormats,omitempty"`
+	DefaultExport   *ExportFormat     `json:"defaultExport,omitempty"`
 	ShortcutDetails *ShortcutDetails  `json:"shortcutDetails,omitempty"`
 }
 
@@ -158,7 +160,7 @@ func (c *Client) listChildrenPage(ctx context.Context, opts ListOptions, pageTok
 
 	values := c.baseListValues()
 	values.Set("q", q)
-	values.Set("fields", "nextPageToken,incompleteSearch,files(id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,shortcutDetails)")
+	values.Set("fields", "nextPageToken,incompleteSearch,files(id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,exportLinks,shortcutDetails)")
 	values.Set("pageSize", fmt.Sprintf("%d", pageSize))
 	if pageToken != "" {
 		values.Set("pageToken", pageToken)
@@ -171,6 +173,7 @@ func (c *Client) listChildrenPage(ctx context.Context, opts ListOptions, pageTok
 	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), &out); err != nil {
 		return nil, err
 	}
+	annotateListExports(&out)
 	return &out, nil
 }
 
@@ -265,6 +268,7 @@ func (c *Client) GetFile(ctx context.Context, id string) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
+	annotateFileExports(&out)
 	return &out, nil
 }
 
@@ -287,6 +291,22 @@ func (c *Client) Download(ctx context.Context, method string, id string, rangeHe
 	return c.do(req)
 }
 
+func (c *Client) Export(ctx context.Context, id string, mimeType string) (*http.Response, error) {
+	if id == "" {
+		return nil, errors.New("file ID is required")
+	}
+	if mimeType == "" {
+		return nil, errors.New("export MIME type is required")
+	}
+	values := url.Values{}
+	values.Set("mimeType", mimeType)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/drive/v3/files/"+url.PathEscape(id)+"/export?"+values.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.do(req)
+}
+
 func (c *Client) findItemsByName(ctx context.Context, parentID, name string, itemType string) ([]File, error) {
 	itemType, err := normalizeItemType(itemType)
 	if err != nil {
@@ -302,12 +322,13 @@ func (c *Client) findItemsByName(ctx context.Context, parentID, name string, ite
 	}
 	values := c.baseListValues()
 	values.Set("q", q)
-	values.Set("fields", "files(id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,shortcutDetails)")
+	values.Set("fields", "files(id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,exportLinks,shortcutDetails)")
 	values.Set("pageSize", "2")
 	var out FileList
 	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), &out); err != nil {
 		return nil, err
 	}
+	annotateListExports(&out)
 	return out.Files, nil
 }
 

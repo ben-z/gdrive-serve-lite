@@ -70,7 +70,15 @@ Drive blob downloads use:
 GET https://www.googleapis.com/drive/v3/files/{fileId}?alt=media
 ```
 
-The Drive download guide documents partial downloads via the HTTP `Range` header. That is essential for video playback and seeking. Google Workspace document export is separate and does not support partial downloads, so v0 should only stream blob files.
+The Drive download guide documents partial downloads via the HTTP `Range` header. That is essential for video playback and seeking.
+
+Google Workspace document export is separate:
+
+```text
+GET https://www.googleapis.com/drive/v3/files/{fileId}/export?mimeType=...
+```
+
+Exports are all-at-once reads and are capped by Drive, so the server rejects `Range` for exports instead of pretending media seeking works there. Blob reads remain the fast path: `GET /file/{id}` still maps directly to one `alt=media` request.
 
 ### OAuth
 
@@ -121,6 +129,7 @@ That rclone-generated encrypted fixture is covered by unit tests.
 - file streaming with Range forwarding
 - metadata endpoint separated from media streaming, so GET reads stay one upstream request
 - optional path-based file streaming for convenience, with file-ID streaming kept as the fast path
+- Workspace document export through Drive's `files.export`, kept separate from blob media reads
 
 ## Local timings that motivated this
 
@@ -139,8 +148,10 @@ Against `gdrive-ro:/teslacam1/RecentClips`:
 ```text
 GET /api/list?folderId=...&type=all|files|dirs&pageSize=1000&limit=1000&pageToken=...&orderBy=...
 GET /api/file?id=...
+GET /api/export-formats?id=...
 GET /api/resolve?path=/a/b/c&type=folder|file|any
 GET /file/{fileId}/{optional-name}
+GET /export/{fileId}/{optional-name}?format=pdf
 GET /path/{path-to-file}
 GET /browse/{path}
 GET /healthz
@@ -150,7 +161,6 @@ GET /healthz
 
 - local HTTP basic auth
 - path and directory metadata cache with TTL
-- export support for Google Workspace docs
 - thumbnail endpoint
 - stricter sort/filter allowlist
 - persistent token store independent of rclone

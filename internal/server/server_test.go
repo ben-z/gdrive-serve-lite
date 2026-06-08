@@ -168,6 +168,118 @@ func TestAPIFileMetadata(t *testing.T) {
 	}
 }
 
+func TestExportEndpointDefaultsToRcloneLikeFormat(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			if req.URL.Path != "/drive/v3/files/doc-1" {
+				t.Fatalf("metadata path = %q", req.URL.Path)
+			}
+			if req.URL.Query().Get("fields") == "" {
+				t.Fatal("expected metadata fields query")
+			}
+			return jsonResponse(http.StatusOK, `{
+				"id":"doc-1",
+				"name":"Meeting Notes",
+				"mimeType":"application/vnd.google-apps.document",
+				"exportLinks":{
+					"application/pdf":"https://example.invalid/pdf",
+					"application/vnd.openxmlformats-officedocument.wordprocessingml.document":"https://example.invalid/docx"
+				}
+			}`), nil
+		case 2:
+			if req.URL.Path != "/drive/v3/files/doc-1/export" {
+				t.Fatalf("export path = %q", req.URL.Path)
+			}
+			if req.URL.Query().Get("mimeType") != drive.OpenXMLDocumentMIME {
+				t.Fatalf("mimeType = %q", req.URL.Query().Get("mimeType"))
+			}
+			resp := textResponse(http.StatusOK, "docx-bytes")
+			resp.Header.Set("Content-Type", drive.OpenXMLDocumentMIME)
+			resp.Header.Set("Content-Length", "10")
+			return resp, nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/export/doc-1/Meeting%20Notes", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if rec.Body.String() != "docx-bytes" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if rec.Header().Get("Content-Type") != drive.OpenXMLDocumentMIME {
+		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), "Meeting%20Notes.docx") {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+}
+
+func TestExportEndpointRejectsRange(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls != 1 {
+			t.Fatalf("unexpected export request %d", calls)
+		}
+		return jsonResponse(http.StatusOK, `{"id":"doc-1","name":"Notes","mimeType":"application/vnd.google-apps.document"}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/export/doc-1/Notes", nil)
+	req.Header.Set("Range", "bytes=0-9")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want metadata only", calls)
+	}
+	if !strings.Contains(rec.Body.String(), "Range is not supported") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestAPIExportFormats(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/drive/v3/files/doc-1" {
+			t.Fatalf("path = %q", req.URL.Path)
+		}
+		return jsonResponse(http.StatusOK, `{
+			"id":"doc-1",
+			"name":"Notes",
+			"mimeType":"application/vnd.google-apps.document",
+			"exportLinks":{
+				"application/pdf":"https://example.invalid/pdf",
+				"application/vnd.openxmlformats-officedocument.wordprocessingml.document":"https://example.invalid/docx"
+			}
+		}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export-formats?id=doc-1", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"defaultExport"`) ||
+		!strings.Contains(rec.Body.String(), `"docx"`) ||
+		!strings.Contains(rec.Body.String(), `"pdf"`) {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
 func TestAPIResolveFile(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {
@@ -268,6 +380,65 @@ func TestPathEndpointStreamsResolvedFile(t *testing.T) {
 		t.Fatalf("Content-Range = %q", rec.Header().Get("Content-Range"))
 	}
 	if !strings.Contains(rec.Header().Get("Content-Disposition"), "video.mp4") {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+}
+
+func TestPathEndpointExportsWorkspaceFile(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "'folder-1' in parents") ||
+				!strings.Contains(query, "name = 'Notes'") ||
+				!strings.Contains(query, "mimeType != '"+drive.FolderMIME+"'") {
+				t.Fatalf("file query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{
+				"files":[{
+					"id":"doc-1",
+					"name":"Notes",
+					"mimeType":"application/vnd.google-apps.document",
+					"exportLinks":{
+						"application/pdf":"https://example.invalid/pdf",
+						"application/vnd.openxmlformats-officedocument.wordprocessingml.document":"https://example.invalid/docx"
+					}
+				}]
+			}`), nil
+		case 3:
+			if req.URL.Path != "/drive/v3/files/doc-1/export" {
+				t.Fatalf("path = %q", req.URL.Path)
+			}
+			if req.URL.Query().Get("mimeType") != "application/pdf" {
+				t.Fatalf("mimeType = %q", req.URL.Query().Get("mimeType"))
+			}
+			return textResponse(http.StatusOK, "%PDF"), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/path/folder/Notes?format=pdf", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+	if rec.Body.String() != "%PDF" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if rec.Header().Get("Content-Type") != "application/pdf" {
+		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), "Notes.pdf") {
 		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
 	}
 }
