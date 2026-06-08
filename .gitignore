@@ -1,0 +1,5 @@
+/gdrive-serve-lite
+*.log
+.DS_Store
+tmp/
+dist/
