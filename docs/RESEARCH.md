@@ -86,7 +86,7 @@ Exports are all-at-once reads and are capped by Drive, so the server rejects `Ra
 
 Drive link-shared files can require resource keys. The Drive API returns them in `resourceKey`, and shortcut target keys in `shortcutDetails.targetResourceKey`. Requests that need them use the `X-Goog-Drive-Resource-Keys` header with `fileId/resourceKey` pairs. Path-based reads can use the key from metadata for both later segment lookups and the final read; ID-based reads accept `resourceKey=...`.
 
-Drive shortcuts are ordinary files with MIME type `application/vnd.google-apps.shortcut`. The shortcuts guide documents searching by `shortcutDetails.targetMimeType`, so path resolution treats folder shortcuts as folders by asking Drive for either real folders or shortcuts whose target MIME type is the Drive folder MIME type.
+Drive shortcuts are ordinary files with MIME type `application/vnd.google-apps.shortcut`. The shortcuts guide documents searching by `shortcutDetails.targetMimeType`, so path resolution and `type=folders` listing treat folder shortcuts as folders by asking Drive for either real folders or shortcuts whose target MIME type is the Drive folder MIME type. `type=files` excludes shortcuts whose targets are folders.
 
 ### OAuth
 

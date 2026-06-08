@@ -119,6 +119,58 @@ func TestListChildrenAggregatesPagesToLimit(t *testing.T) {
 	}
 }
 
+func TestListChildrenFoldersIncludesFolderShortcuts(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "mimeType = '"+FolderMIME+"'") ||
+				!strings.Contains(query, "shortcutDetails.targetMimeType = '"+FolderMIME+"'") {
+				t.Fatalf("query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"shortcut-1","name":"Shared","mimeType":"application/vnd.google-apps.shortcut","shortcutDetails":{"targetId":"folder-1","targetMimeType":"application/vnd.google-apps.folder"}}]}`), nil
+		}),
+	})
+
+	list, err := client.ListChildren(context.Background(), ListOptions{
+		FolderID: "root-folder",
+		Type:     "folders",
+		PageSize: 1000,
+		Limit:    1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Files) != 1 || list.Files[0].ID != "shortcut-1" {
+		t.Fatalf("files = %+v", list.Files)
+	}
+}
+
+func TestListChildrenFilesExcludesFolderShortcuts(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "mimeType != '"+FolderMIME+"'") ||
+				!strings.Contains(query, "shortcutDetails.targetMimeType != '"+FolderMIME+"'") {
+				t.Fatalf("query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}]}`), nil
+		}),
+	})
+
+	list, err := client.ListChildren(context.Background(), ListOptions{
+		FolderID: "root-folder",
+		Type:     "files",
+		PageSize: 1000,
+		Limit:    1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Files) != 1 || list.Files[0].ID != "file-1" {
+		t.Fatalf("files = %+v", list.Files)
+	}
+}
+
 func TestDownloadForwardsRange(t *testing.T) {
 	client := NewClientWithHTTPClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
