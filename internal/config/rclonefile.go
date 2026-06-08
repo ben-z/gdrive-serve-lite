@@ -99,6 +99,7 @@ func configFromRcloneEntry(remote string, entry map[string]string) (Config, erro
 
 func decryptRcloneConfig(data []byte, password string) ([]byte, bool, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), len(data)+1)
 	var encoded []string
 	foundHeader := false
 	for scanner.Scan() {
@@ -164,6 +165,7 @@ func parseRcloneINI(data []byte) (map[string]map[string]string, error) {
 	sections := map[string]map[string]string{}
 	var current string
 	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), len(data)+1)
 	lineNo := 0
 	for scanner.Scan() {
 		lineNo++

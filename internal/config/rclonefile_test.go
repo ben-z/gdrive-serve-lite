@@ -1,10 +1,14 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"golang.org/x/crypto/nacl/secretbox"
 )
 
 const fakePlainRcloneConfig = `[fake-drive]
@@ -50,6 +54,16 @@ func TestLoadEncryptedRcloneFile(t *testing.T) {
 	}
 }
 
+func TestLoadEncryptedRcloneFileWithLongLines(t *testing.T) {
+	plain := []byte("#" + strings.Repeat("x", 70*1024) + "\n" + fakePlainRcloneConfig)
+	path := writeFixture(t, "rclone.conf", encryptedRcloneFixture(t, plain, "fixture-pass"))
+	cfg, err := loadRcloneFile("fake-drive", path, "fixture-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFakeConfig(t, cfg)
+}
+
 func TestEncryptedRcloneFileRequiresPassword(t *testing.T) {
 	path := writeFixture(t, "rclone.conf", fakeEncryptedRcloneConfig)
 	_, err := loadRcloneFile("fake-drive", path, "")
@@ -87,6 +101,19 @@ func writeFixture(t *testing.T, name, contents string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func encryptedRcloneFixture(t *testing.T, plain []byte, password string) string {
+	t.Helper()
+	key, err := rcloneConfigKey(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nonce [24]byte
+	sealed := secretbox.Seal(nonce[:], plain, &nonce, &key)
+	return "# Encrypted rclone configuration File\n\n" +
+		rcloneEncryptedHeader + "\n" +
+		base64.StdEncoding.EncodeToString(sealed) + "\n"
 }
 
 func assertFakeConfig(t *testing.T, cfg Config) {
