@@ -28,6 +28,22 @@ type basicAuth struct {
 	password string
 }
 
+var readResponseHeaders = []string{
+	"Content-Type",
+	"Content-Length",
+	"Content-Range",
+	"Accept-Ranges",
+	"ETag",
+	"Last-Modified",
+	"Content-Disposition",
+	"Cache-Control",
+	"Expires",
+	"Content-Encoding",
+	"Content-Language",
+	"Content-MD5",
+	"X-Goog-Hash",
+}
+
 type ListResponse struct {
 	Path             string       `json:"path,omitempty"`
 	FolderID         string       `json:"folderId"`
@@ -288,13 +304,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer res.Body.Close()
 
-	copyHeader(w.Header(), res.Header, "Content-Type")
-	copyHeader(w.Header(), res.Header, "Content-Length")
-	copyHeader(w.Header(), res.Header, "Content-Range")
-	copyHeader(w.Header(), res.Header, "Accept-Ranges")
-	copyHeader(w.Header(), res.Header, "ETag")
-	copyHeader(w.Header(), res.Header, "Last-Modified")
-	copyHeader(w.Header(), res.Header, "Content-Disposition")
+	copyReadResponseHeaders(w.Header(), res.Header)
 	if isReadSuccess(res.StatusCode) && name != "" && w.Header().Get("Content-Disposition") == "" {
 		w.Header().Set("Content-Disposition", contentDisposition(name))
 	}
@@ -353,13 +363,7 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 	}
 	defer res.Body.Close()
 
-	copyHeader(w.Header(), res.Header, "Content-Type")
-	copyHeader(w.Header(), res.Header, "Content-Length")
-	copyHeader(w.Header(), res.Header, "Content-Range")
-	copyHeader(w.Header(), res.Header, "Accept-Ranges")
-	copyHeader(w.Header(), res.Header, "ETag")
-	copyHeader(w.Header(), res.Header, "Last-Modified")
-	copyHeader(w.Header(), res.Header, "Content-Disposition")
+	copyReadResponseHeaders(w.Header(), res.Header)
 	if isReadSuccess(res.StatusCode) && name != "" && w.Header().Get("Content-Disposition") == "" {
 		w.Header().Set("Content-Disposition", contentDisposition(name))
 	}
@@ -422,11 +426,7 @@ func (s *Server) streamExport(w http.ResponseWriter, r *http.Request, file drive
 	}
 	defer res.Body.Close()
 
-	copyHeader(w.Header(), res.Header, "Content-Type")
-	copyHeader(w.Header(), res.Header, "Content-Length")
-	copyHeader(w.Header(), res.Header, "ETag")
-	copyHeader(w.Header(), res.Header, "Last-Modified")
-	copyHeader(w.Header(), res.Header, "Content-Disposition")
+	copyReadResponseHeaders(w.Header(), res.Header)
 	if isReadSuccess(res.StatusCode) && w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", format.MIMEType)
 	}
@@ -846,6 +846,12 @@ func withResourceKey(link string, resourceKey string) string {
 func copyHeader(dst http.Header, src http.Header, key string) {
 	if value := src.Get(key); value != "" {
 		dst.Set(key, value)
+	}
+}
+
+func copyReadResponseHeaders(dst http.Header, src http.Header) {
+	for _, key := range readResponseHeaders {
+		copyHeader(dst, src, key)
 	}
 }
 
