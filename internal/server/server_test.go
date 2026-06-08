@@ -794,6 +794,9 @@ func TestFileHeadUsesMetadataOnly(t *testing.T) {
 	if rec.Header().Get("Content-Length") != "10" {
 		t.Fatalf("Content-Length = %q", rec.Header().Get("Content-Length"))
 	}
+	if rec.Header().Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("Accept-Ranges = %q", rec.Header().Get("Accept-Ranges"))
+	}
 	if rec.Header().Get("Content-Type") != "video/mp4" {
 		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
 	}
@@ -990,6 +993,9 @@ func TestExportHeadHonorsIfModifiedSince(t *testing.T) {
 	}
 	if rec.Header().Get("Content-Type") != "" {
 		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("Accept-Ranges") != "" {
+		t.Fatalf("Accept-Ranges = %q", rec.Header().Get("Accept-Ranges"))
 	}
 	if rec.Header().Get("Content-Disposition") != "" {
 		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
@@ -1581,6 +1587,9 @@ func TestPathEndpointHeadUsesResolvedMetadata(t *testing.T) {
 	}
 	if rec.Header().Get("Content-Length") != "10" {
 		t.Fatalf("Content-Length = %q", rec.Header().Get("Content-Length"))
+	}
+	if rec.Header().Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("Accept-Ranges = %q", rec.Header().Get("Accept-Ranges"))
 	}
 	if rec.Header().Get("Content-Type") != "video/mp4" {
 		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
