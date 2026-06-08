@@ -220,6 +220,85 @@ func TestBasicAuthAllowsAuthorizedRequests(t *testing.T) {
 	}
 }
 
+func TestCORSPreflightBypassesBasicAuth(t *testing.T) {
+	cfg := config.Config{
+		ClientID:     "test-client",
+		RootFolderID: "root-folder",
+		Token: config.OAuthToken{
+			AccessToken: "test-access",
+			TokenType:   "Bearer",
+		},
+	}
+	client := drive.NewClientWithHTTPClient(cfg, &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected Drive request for preflight: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	})})
+	app := New(client, cfg.RootFolderID)
+	app.SetBasicAuth("ben", "secret")
+	app.SetAllowOrigin("http://localhost:3000")
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/list", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	req.Header.Set("Access-Control-Request-Headers", "Authorization, Range")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Fatalf("Access-Control-Allow-Origin = %q", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if rec.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Fatalf("Access-Control-Allow-Credentials = %q", rec.Header().Get("Access-Control-Allow-Credentials"))
+	}
+	if !strings.Contains(rec.Header().Get("Access-Control-Allow-Headers"), "Range") {
+		t.Fatalf("Access-Control-Allow-Headers = %q", rec.Header().Get("Access-Control-Allow-Headers"))
+	}
+}
+
+func TestCORSHeadersOnAllowedResponse(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
+	})
+	app.SetAllowOrigin("*")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/list", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("Access-Control-Allow-Origin = %q", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if rec.Header().Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatalf("Access-Control-Allow-Credentials = %q", rec.Header().Get("Access-Control-Allow-Credentials"))
+	}
+	if !strings.Contains(rec.Header().Get("Access-Control-Expose-Headers"), "X-Goog-Hash") {
+		t.Fatalf("Access-Control-Expose-Headers = %q", rec.Header().Get("Access-Control-Expose-Headers"))
+	}
+}
+
+func TestCORSRejectsDifferentOrigin(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
+	})
+	app.SetAllowOrigin("http://localhost:3000")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/list", nil)
+	req.Header.Set("Origin", "http://evil.invalid")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("Access-Control-Allow-Origin = %q", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
 func TestRootPathListsConfiguredRoot(t *testing.T) {
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		query := req.URL.Query().Get("q")

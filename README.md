@@ -33,6 +33,7 @@ go build ./cmd/gdrive-serve-lite
   --drive-response-header-timeout 30s \
   --user ben \
   --pass 'local-password' \
+  --allow-origin http://localhost:3000 \
   --addr 127.0.0.1:8765
 ```
 
@@ -55,6 +56,8 @@ The `--list-cache-ttl` flag controls an exact-query cache for successful directo
 The `--drive-response-header-timeout` flag bounds how long the server waits for Google API response headers. The default is `30s`; it does not cap the duration of a long media response body after Drive starts sending it.
 
 Use `--user` and `--pass` together to require HTTP Basic Auth on every endpoint. The default is no local HTTP auth, matching the usual local-only workflow.
+
+Use `--allow-origin` to enable CORS for browser tools. Pass a specific origin such as `http://localhost:3000` when using credentials, or `*` for unauthenticated local experiments.
 
 ## Run without rclone
 

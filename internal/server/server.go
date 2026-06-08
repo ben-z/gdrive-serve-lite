@@ -18,9 +18,10 @@ import (
 )
 
 type Server struct {
-	drive *drive.Client
-	root  folderRef
-	auth  *basicAuth
+	drive       *drive.Client
+	root        folderRef
+	auth        *basicAuth
+	allowOrigin string
 }
 
 type basicAuth struct {
@@ -86,6 +87,10 @@ func (s *Server) SetBasicAuth(username, password string) {
 	s.auth = &basicAuth{username: username, password: password}
 }
 
+func (s *Server) SetAllowOrigin(origin string) {
+	s.allowOrigin = strings.TrimSpace(origin)
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -99,10 +104,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/browse/", s.handleBrowse)
 	mux.HandleFunc("/browse", s.handleBrowse)
 	mux.HandleFunc("/", s.handleRoot)
-	if s.auth == nil {
-		return mux
+	var handler http.Handler = mux
+	if s.auth != nil {
+		handler = s.authMiddleware(handler)
 	}
-	return s.authMiddleware(mux)
+	if s.allowOrigin != "" {
+		handler = s.corsMiddleware(handler)
+	}
+	return handler
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
@@ -116,6 +125,29 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.corsAllowed(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		setCORSHeaders(w.Header(), s.allowOrigin)
+		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) corsAllowed(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return false
+	}
+	return s.allowOrigin == "*" || origin == s.allowOrigin
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -867,6 +899,16 @@ func copyHeader(dst http.Header, src http.Header, key string) {
 func copyReadResponseHeaders(dst http.Header, src http.Header) {
 	for _, key := range readResponseHeaders {
 		copyHeader(dst, src, key)
+	}
+}
+
+func setCORSHeaders(headers http.Header, allowOrigin string) {
+	headers.Set("Access-Control-Allow-Origin", allowOrigin)
+	headers.Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+	headers.Set("Access-Control-Allow-Headers", "Authorization, Range, If-Match, If-None-Match, If-Modified-Since, If-Unmodified-Since, If-Range, Content-Type")
+	headers.Set("Access-Control-Expose-Headers", strings.Join(readResponseHeaders, ", "))
+	if allowOrigin != "*" {
+		headers.Set("Access-Control-Allow-Credentials", "true")
 	}
 }
 
