@@ -81,6 +81,12 @@ func resolveRcloneConfigPath(configPath string) (string, error) {
 }
 
 func configFromRcloneEntry(remote string, entry map[string]string) (Config, error) {
+	if remoteType := strings.TrimSpace(entry["type"]); !strings.EqualFold(remoteType, "drive") {
+		if remoteType == "" {
+			remoteType = "<missing>"
+		}
+		return Config{}, fmt.Errorf("rclone remote %q has unsupported type %q; only Google Drive remotes are supported", remote, remoteType)
+	}
 	var token OAuthToken
 	if raw := entry["token"]; raw != "" {
 		if err := json.Unmarshal([]byte(raw), &token); err != nil {
