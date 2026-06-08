@@ -17,9 +17,9 @@ import (
 )
 
 type Server struct {
-	drive        *drive.Client
-	rootFolderID string
-	auth         *basicAuth
+	drive *drive.Client
+	root  folderRef
+	auth  *basicAuth
 }
 
 type basicAuth struct {
@@ -54,7 +54,11 @@ type folderRef struct {
 }
 
 func New(client *drive.Client, rootFolderID string) *Server {
-	return &Server{drive: client, rootFolderID: rootFolderID}
+	return NewWithRootResourceKey(client, rootFolderID, "")
+}
+
+func NewWithRootResourceKey(client *drive.Client, rootFolderID string, rootResourceKey string) *Server {
+	return &Server{drive: client, root: folderRef{ID: rootFolderID, ResourceKey: rootResourceKey}}
 }
 
 func (s *Server) SetBasicAuth(username, password string) {
@@ -108,10 +112,10 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	p := compatiblePath(r)
 	if p == "/" {
-		s.serveFolderPath(w, r, p, folderRef{ID: s.rootFolderID})
+		s.serveFolderPath(w, r, p, s.root)
 		return
 	}
-	item, err := s.drive.ResolveItemPath(r.Context(), p, s.rootFolderID, "any")
+	item, err := s.resolveItemPath(r, p, "any")
 	if err != nil {
 		writeError(w, err)
 		return
@@ -134,7 +138,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	if itemType == "" {
 		itemType = "folder"
 	}
-	item, err := s.drive.ResolveItemPath(r.Context(), p, s.rootFolderID, itemType)
+	item, err := s.resolveItemPath(r, p, itemType)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -308,7 +312,7 @@ func (s *Server) handlePathFile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	item, err := s.drive.ResolveItemPath(r.Context(), rest, s.rootFolderID, "file")
+	item, err := s.resolveItemPath(r, rest, "file")
 	if err != nil {
 		writeError(w, err)
 		return
@@ -468,7 +472,7 @@ func (s *Server) folderFromRequest(r *http.Request) (folderRef, error) {
 		return folderRef{ID: id, ResourceKey: r.URL.Query().Get("resourceKey")}, nil
 	}
 	if p := r.URL.Query().Get("path"); p != "" {
-		item, err := s.drive.ResolveItemPath(r.Context(), p, s.rootFolderID, "folder")
+		item, err := s.resolveItemPath(r, p, "folder")
 		if err != nil {
 			return folderRef{}, err
 		}
@@ -476,14 +480,18 @@ func (s *Server) folderFromRequest(r *http.Request) (folderRef, error) {
 		return folderRef{ID: id, ResourceKey: resourceKey}, nil
 	}
 	if strings.HasPrefix(r.URL.Path, "/browse") {
-		item, err := s.drive.ResolveItemPath(r.Context(), browsePath(r), s.rootFolderID, "folder")
+		item, err := s.resolveItemPath(r, browsePath(r), "folder")
 		if err != nil {
 			return folderRef{}, err
 		}
 		id, resourceKey := readableFileIDAndKey(item.File)
 		return folderRef{ID: id, ResourceKey: resourceKey}, nil
 	}
-	return folderRef{ID: s.rootFolderID}, nil
+	return s.root, nil
+}
+
+func (s *Server) resolveItemPath(r *http.Request, p string, itemType string) (*drive.ResolvedItem, error) {
+	return s.drive.ResolveItemPathWithResourceKey(r.Context(), p, s.root.ID, s.root.ResourceKey, itemType)
 }
 
 func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p string, folder folderRef, list *drive.FileList) {

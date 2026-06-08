@@ -455,6 +455,30 @@ func TestResolveItemPathCarriesParentResourceKey(t *testing.T) {
 	}
 }
 
+func TestResolveItemPathUsesRootResourceKey(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "root-folder/root-key-1" {
+				t.Fatalf("resource key header = %q", got)
+			}
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "'root-folder' in parents") ||
+				!strings.Contains(query, "name = 'video.mp4'") {
+				t.Fatalf("query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}]}`), nil
+		}),
+	})
+
+	item, err := client.ResolveItemPathWithResourceKey(context.Background(), "/video.mp4", "root-folder", "root-key-1", "file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.File.ID != "file-1" || item.ParentID != "root-folder" {
+		t.Fatalf("item = %+v", item)
+	}
+}
+
 func TestResolveItemPathCarriesShortcutParentResourceKey(t *testing.T) {
 	var calls int
 	client := NewClientWithHTTPClient(testConfig(), &http.Client{
