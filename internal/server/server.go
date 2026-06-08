@@ -710,7 +710,7 @@ func listResponse(r *http.Request, folder folderRef, list *drive.FileList) ListR
 			q.Set("resourceKey", folder.ResourceKey)
 		}
 		q.Set("pageToken", list.NextPageToken)
-		resp.Next = r.URL.Path + "?" + q.Encode()
+		resp.Next = escapedPath(r) + "?" + q.Encode()
 	}
 	return resp
 }
@@ -724,7 +724,7 @@ func listResponseWithPath(r *http.Request, p string, folder folderRef, list *dri
 			q.Set("resourceKey", folder.ResourceKey)
 		}
 		q.Set("pageToken", list.NextPageToken)
-		resp.Next = r.URL.Path + "?" + q.Encode()
+		resp.Next = escapedPath(r) + "?" + q.Encode()
 	}
 	return resp
 }
