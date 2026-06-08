@@ -753,7 +753,14 @@ func exportFormatFromRequest(r *http.Request, file drive.File) (drive.ExportForm
 		raw = r.URL.Query().Get("format")
 	}
 	if raw != "" {
-		return drive.ExportFormatFor(raw)
+		format, err := drive.ExportFormatFor(raw)
+		if err != nil {
+			return drive.ExportFormat{}, err
+		}
+		if !drive.SupportsExportFormat(file, format) {
+			return drive.ExportFormat{}, fmt.Errorf("%w: MIME type %q is not supported for %q", drive.ErrUnsupportedExport, format.MIMEType, file.Name)
+		}
+		return format, nil
 	}
 	format, ok := drive.DefaultExportFormat(file)
 	if !ok {

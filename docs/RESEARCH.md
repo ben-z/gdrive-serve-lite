@@ -82,7 +82,7 @@ Google Workspace document export is separate:
 GET https://www.googleapis.com/drive/v3/files/{fileId}/export?mimeType=...
 ```
 
-Exports are all-at-once reads and are capped by Drive, so the server rejects `Range` for exports instead of pretending media seeking works there. After local format validation, export responses use the same raw pass-through model as media reads so Drive status codes, error bodies, and read headers remain intact. Blob reads remain the fast path: `GET /file/{id}` still maps directly to one `alt=media` request.
+Exports are all-at-once reads and are capped by Drive, so the server rejects `Range` for exports instead of pretending media seeking works there. Explicit export formats are checked against Drive metadata when available, then export responses use the same raw pass-through model as media reads so Drive status codes, error bodies, and read headers remain intact. Blob reads remain the fast path: `GET /file/{id}` still maps directly to one `alt=media` request.
 
 Drive link-shared files can require resource keys. The Drive API returns them in `resourceKey`, and shortcut target keys in `shortcutDetails.targetResourceKey`. Requests that need them use the `X-Goog-Drive-Resource-Keys` header with `fileId/resourceKey` pairs. Path-based reads can use the key from metadata for both later segment lookups and the final read; ID-based reads accept `resourceKey=...`.
 

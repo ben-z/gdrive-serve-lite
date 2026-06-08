@@ -143,6 +143,15 @@ func SupportedExportFormats(file File) []ExportFormat {
 	return formats
 }
 
+func SupportsExportFormat(file File, format ExportFormat) bool {
+	for _, supported := range SupportedExportFormats(file) {
+		if strings.EqualFold(supported.MIMEType, format.MIMEType) {
+			return true
+		}
+	}
+	return false
+}
+
 func IsWorkspaceFile(file File) bool {
 	return strings.HasPrefix(file.MIMEType, GoogleAppsMIMEPrefix) &&
 		file.MIMEType != FolderMIME &&

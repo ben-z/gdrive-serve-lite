@@ -152,7 +152,7 @@ http://127.0.0.1:8765/export/GOOGLE_DOC_FILE_ID/name.docx
 http://127.0.0.1:8765/export/GOOGLE_DOC_FILE_ID/name.pdf?format=pdf
 ```
 
-If no `format` or `mimeType` is provided, the server defaults to rclone-like export formats: Docs as `docx`, Sheets as `xlsx`, Slides as `pptx`, Drawings as `svg`, Apps Script as `json`, and Google Vids as `mp4`. After local format validation, Drive export responses are passed through with Drive's status, body, `Content-Disposition`, cache headers, and other read headers. Drive exports do not support HTTP range reads, so `Range` requests are rejected for `/export/...`. Export `HEAD` responses use the source file's Drive `modifiedTime` for `Last-Modified` and `If-Modified-Since`.
+If no `format` or `mimeType` is provided, the server defaults to rclone-like export formats: Docs as `docx`, Sheets as `xlsx`, Slides as `pptx`, Drawings as `svg`, Apps Script as `json`, and Google Vids as `mp4`. Explicit export formats are checked against Drive metadata when available, then Drive export responses are passed through with Drive's status, body, `Content-Disposition`, cache headers, and other read headers. Drive exports do not support HTTP range reads, so `Range` requests are rejected for `/export/...`. Export `HEAD` responses use the source file's Drive `modifiedTime` for `Last-Modified` and `If-Modified-Since`.
 
 You can also stream by path:
 
