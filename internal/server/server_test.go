@@ -174,6 +174,43 @@ func TestRootPathListsConfiguredRoot(t *testing.T) {
 	}
 }
 
+func TestRootPathCanReturnJSONListing(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		query := req.URL.Query().Get("q")
+		if !strings.Contains(query, "'root-folder' in parents") ||
+			!strings.Contains(query, "mimeType != '"+drive.FolderMIME+"'") {
+			t.Fatalf("query = %q", query)
+		}
+		if req.URL.Query().Get("pageSize") != "1" {
+			t.Fatalf("pageSize = %q", req.URL.Query().Get("pageSize"))
+		}
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}],"nextPageToken":"tok-2"}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/?format=json&type=files&pageSize=1&limit=1", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+	var body ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Path != "/" || body.FolderID != "root-folder" || body.Count != 1 {
+		t.Fatalf("body = %+v", body)
+	}
+	if body.NextPageToken != "tok-2" {
+		t.Fatalf("NextPageToken = %q", body.NextPageToken)
+	}
+	if !strings.Contains(body.Next, "format=json") || !strings.Contains(body.Next, "pageToken=tok-2") {
+		t.Fatalf("Next = %q", body.Next)
+	}
+}
+
 func TestRootCompatibleFolderPathListsFolder(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {
@@ -209,6 +246,57 @@ func TestRootCompatibleFolderPathListsFolder(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "video.mp4") {
 		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestRootCompatibleFolderPathCanReturnJSONListing(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "'root-folder' in parents") ||
+				!strings.Contains(query, "name = 'folder'") {
+				t.Fatalf("resolve query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "'folder-1' in parents") {
+				t.Fatalf("list query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}],"nextPageToken":"tok-2"}`), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/folder?type=files&pageSize=1000&limit=1", nil)
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	var body ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Path != "/folder" || body.FolderID != "folder-1" || body.Count != 1 {
+		t.Fatalf("body = %+v", body)
+	}
+	if body.Files[0].Name != "video.mp4" {
+		t.Fatalf("files = %+v", body.Files)
+	}
+	if !strings.HasPrefix(body.Next, "/folder?") ||
+		!strings.Contains(body.Next, "pageToken=tok-2") ||
+		!strings.Contains(body.Next, "type=files") {
+		t.Fatalf("Next = %q", body.Next)
 	}
 }
 
