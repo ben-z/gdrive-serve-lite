@@ -209,6 +209,38 @@ func TestDownloadForwardsRange(t *testing.T) {
 	}
 }
 
+func TestDownloadReturnsRangeErrorResponse(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Header.Get("Range") != "bytes=999-1000" {
+				t.Fatalf("Range = %q", req.Header.Get("Range"))
+			}
+			resp := textResponse(http.StatusRequestedRangeNotSatisfiable, "range outside file")
+			resp.Header.Set("Content-Range", "bytes */100")
+			return resp, nil
+		}),
+	})
+
+	resp, err := client.Download(context.Background(), http.MethodGet, "file-1", "bytes=999-1000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Content-Range") != "bytes */100" {
+		t.Fatalf("Content-Range = %q", resp.Header.Get("Content-Range"))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "range outside file" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
 func TestDownloadForwardsConditionalHeaders(t *testing.T) {
 	client := NewClientWithHTTPClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

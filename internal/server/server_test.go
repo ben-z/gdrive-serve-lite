@@ -581,6 +581,40 @@ func TestFileEndpointForwardsConditionalHeaders(t *testing.T) {
 	}
 }
 
+func TestFileEndpointPassesThroughRangeError(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if req.URL.Query().Get("alt") != "media" {
+			t.Fatalf("alt = %q", req.URL.Query().Get("alt"))
+		}
+		if req.Header.Get("Range") != "bytes=999-1000" {
+			t.Fatalf("Range = %q", req.Header.Get("Range"))
+		}
+		resp := textResponse(http.StatusRequestedRangeNotSatisfiable, "range outside file")
+		resp.Header.Set("Content-Range", "bytes */100")
+		resp.Header.Set("Content-Type", "text/plain")
+		return resp, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/file/file-1/video.mp4", nil)
+	req.Header.Set("Range", "bytes=999-1000")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if rec.Header().Get("Content-Range") != "bytes */100" {
+		t.Fatalf("Content-Range = %q", rec.Header().Get("Content-Range"))
+	}
+	if rec.Body.String() != "range outside file" {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
 func TestFileEndpointForwardsResourceKey(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {

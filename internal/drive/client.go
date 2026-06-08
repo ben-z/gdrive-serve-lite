@@ -397,7 +397,7 @@ func (c *Client) DownloadWithResourceKeyAndHeaders(ctx context.Context, method s
 	}
 	copySelectedHeaders(req.Header, headers, mediaRequestHeaders...)
 	setResourceKeyHeader(req, id, resourceKey)
-	return c.do(req)
+	return c.doRaw(req)
 }
 
 func (c *Client) Export(ctx context.Context, id string, mimeType string) (*http.Response, error) {
@@ -494,6 +494,23 @@ func (c *Client) getJSONWithResourceKey(ctx context.Context, requestURL string, 
 }
 
 func (c *Client) do(req *http.Request) (*http.Response, error) {
+	res, err := c.doRaw(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode >= 400 {
+		defer res.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+		return nil, &APIError{
+			StatusCode: res.StatusCode,
+			Status:     res.Status,
+			Body:       strings.TrimSpace(string(body)),
+		}
+	}
+	return res, nil
+}
+
+func (c *Client) doRaw(req *http.Request) (*http.Response, error) {
 	token, err := c.accessToken(req.Context(), false)
 	if err != nil {
 		return nil, err
@@ -517,15 +534,6 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 		res, err = c.httpClient.Do(req)
 		if err != nil {
 			return nil, err
-		}
-	}
-	if res.StatusCode >= 400 {
-		defer res.Body.Close()
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
-		return nil, &APIError{
-			StatusCode: res.StatusCode,
-			Status:     res.Status,
-			Body:       strings.TrimSpace(string(body)),
 		}
 	}
 	return res, nil
