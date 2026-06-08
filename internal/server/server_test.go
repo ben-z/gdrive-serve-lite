@@ -608,6 +608,50 @@ func TestRootCompatibleFolderPathCanReturnJSONListing(t *testing.T) {
 	}
 }
 
+func TestRootCompatibleJSONNextPreservesEscapedPath(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		query := req.URL.Query().Get("q")
+		switch calls {
+		case 1:
+			if !strings.Contains(query, "'root-folder' in parents") ||
+				!strings.Contains(query, "name = 'A/B'") {
+				t.Fatalf("resolve query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"A/B","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			if !strings.Contains(query, "'folder-1' in parents") {
+				t.Fatalf("list query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}],"nextPageToken":"tok-2"}`), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/A%2FB?type=files&pageSize=1&limit=1", nil)
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(body.Next, "/A%2FB?") ||
+		!strings.Contains(body.Next, "pageToken=tok-2") ||
+		strings.Contains(body.Next, "%252F") {
+		t.Fatalf("Next = %q", body.Next)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
 func TestBrowseHeadResolvesFolderButDoesNotList(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {
