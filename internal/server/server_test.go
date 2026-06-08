@@ -662,7 +662,7 @@ func TestFileHeadUsesMetadataOnly(t *testing.T) {
 		if req.URL.Query().Get("fields") == "" {
 			t.Fatal("expected metadata fields query")
 		}
-		return jsonResponse(http.StatusOK, `{"id":"file-1","name":"actual.mp4","mimeType":"video/mp4","size":"10"}`), nil
+		return jsonResponse(http.StatusOK, `{"id":"file-1","name":"actual.mp4","mimeType":"video/mp4","size":"10","modifiedTime":"2026-06-08T12:34:56.789Z"}`), nil
 	})
 
 	req := httptest.NewRequest(http.MethodHead, "/file/file-1/request-name.mp4", nil)
@@ -680,7 +680,41 @@ func TestFileHeadUsesMetadataOnly(t *testing.T) {
 	if rec.Header().Get("Content-Type") != "video/mp4" {
 		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
 	}
+	if rec.Header().Get("Last-Modified") != "Mon, 08 Jun 2026 12:34:56 GMT" {
+		t.Fatalf("Last-Modified = %q", rec.Header().Get("Last-Modified"))
+	}
 	if !strings.Contains(rec.Header().Get("Content-Disposition"), "request-name.mp4") {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+}
+
+func TestFileHeadHonorsIfModifiedSince(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if req.URL.Query().Get("alt") != "" {
+			t.Fatalf("unexpected media request alt=%q", req.URL.Query().Get("alt"))
+		}
+		return jsonResponse(http.StatusOK, `{"id":"file-1","name":"actual.mp4","mimeType":"video/mp4","size":"10","modifiedTime":"2026-06-08T12:34:56Z"}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodHead, "/file/file-1/request-name.mp4", nil)
+	req.Header.Set("If-Modified-Since", "Mon, 08 Jun 2026 12:34:56 GMT")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if rec.Header().Get("Last-Modified") != "Mon, 08 Jun 2026 12:34:56 GMT" {
+		t.Fatalf("Last-Modified = %q", rec.Header().Get("Last-Modified"))
+	}
+	if rec.Header().Get("Content-Length") != "" {
+		t.Fatalf("Content-Length = %q", rec.Header().Get("Content-Length"))
+	}
+	if rec.Header().Get("Content-Disposition") != "" {
 		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
 	}
 }
@@ -766,6 +800,42 @@ func TestExportEndpointDefaultsToRcloneLikeFormat(t *testing.T) {
 		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
 	}
 	if rec.Header().Get("Content-Disposition") != "attachment; filename=drive-doc.docx" {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+}
+
+func TestExportHeadHonorsIfModifiedSince(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if req.URL.Query().Get("alt") != "" {
+			t.Fatalf("unexpected media request alt=%q", req.URL.Query().Get("alt"))
+		}
+		return jsonResponse(http.StatusOK, `{
+			"id":"doc-1",
+			"name":"Notes",
+			"mimeType":"application/vnd.google-apps.document",
+			"modifiedTime":"2026-06-08T12:34:56Z"
+		}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodHead, "/export/doc-1/Notes?format=pdf", nil)
+	req.Header.Set("If-Modified-Since", "Mon, 08 Jun 2026 12:34:56 GMT")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want metadata only", calls)
+	}
+	if rec.Header().Get("Last-Modified") != "Mon, 08 Jun 2026 12:34:56 GMT" {
+		t.Fatalf("Last-Modified = %q", rec.Header().Get("Last-Modified"))
+	}
+	if rec.Header().Get("Content-Type") != "" {
+		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("Content-Disposition") != "" {
 		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
 	}
 }
@@ -1309,7 +1379,7 @@ func TestPathEndpointHeadUsesResolvedMetadata(t *testing.T) {
 		case 1:
 			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
 		case 2:
-			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}]}`), nil
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10","modifiedTime":"2026-06-08T12:34:56Z"}]}`), nil
 		default:
 			t.Fatalf("unexpected request %d", calls)
 			return nil, nil
@@ -1330,6 +1400,9 @@ func TestPathEndpointHeadUsesResolvedMetadata(t *testing.T) {
 	}
 	if rec.Header().Get("Content-Type") != "video/mp4" {
 		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("Last-Modified") != "Mon, 08 Jun 2026 12:34:56 GMT" {
+		t.Fatalf("Last-Modified = %q", rec.Header().Get("Last-Modified"))
 	}
 	if !strings.Contains(rec.Header().Get("Content-Disposition"), "video.mp4") {
 		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
