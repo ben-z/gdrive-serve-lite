@@ -115,6 +115,13 @@ http://127.0.0.1:8765/
 http://127.0.0.1:8765/browse/
 ```
 
+Folder paths can also return the same paginated JSON listing shape as `/api/list`:
+
+```sh
+curl 'http://127.0.0.1:8765/?format=json&type=files&pageSize=1000&limit=1000'
+curl -H 'Accept: application/json' 'http://127.0.0.1:8765/teslacam1/RecentClips?type=files&pageSize=1000&limit=1000'
+```
+
 Download or stream a file:
 
 ```text

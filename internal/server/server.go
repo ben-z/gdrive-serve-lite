@@ -28,6 +28,7 @@ type basicAuth struct {
 }
 
 type ListResponse struct {
+	Path             string       `json:"path,omitempty"`
 	FolderID         string       `json:"folderId"`
 	Count            int          `json:"count"`
 	Files            []drive.File `json:"files"`
@@ -347,7 +348,11 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 
 func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p string, folderID string) {
 	if r.Method == http.MethodHead {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if wantsJSON(r) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		} else {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		}
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -361,6 +366,10 @@ func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p strin
 	})
 	if err != nil {
 		writeError(w, err)
+		return
+	}
+	if wantsJSON(r) {
+		writeJSON(w, http.StatusOK, listResponseWithPath(r, p, folderID, list))
 		return
 	}
 	s.renderBrowse(w, r, p, folderID, list)
@@ -429,6 +438,10 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeError(w, err)
+		return
+	}
+	if wantsJSON(r) {
+		writeJSON(w, http.StatusOK, listResponseWithPath(r, p, folderID, list))
 		return
 	}
 	s.renderBrowse(w, r, p, folderID, list)
@@ -576,6 +589,17 @@ func listResponse(r *http.Request, folderID string, list *drive.FileList) ListRe
 	return resp
 }
 
+func listResponseWithPath(r *http.Request, p string, folderID string, list *drive.FileList) ListResponse {
+	resp := listResponse(r, folderID, list)
+	resp.Path = p
+	if list.NextPageToken != "" {
+		q := r.URL.Query()
+		q.Set("pageToken", list.NextPageToken)
+		resp.Next = r.URL.Path + "?" + q.Encode()
+	}
+	return resp
+}
+
 func resolveResponse(item *drive.ResolvedItem) ResolveResponse {
 	isDir := item.File.MIMEType == drive.FolderMIME
 	resp := ResolveResponse{
@@ -668,6 +692,21 @@ func intParam(r *http.Request, name string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func wantsJSON(r *http.Request) bool {
+	if strings.EqualFold(r.URL.Query().Get("format"), "json") ||
+		strings.EqualFold(r.URL.Query().Get("alt"), "json") ||
+		strings.EqualFold(r.URL.Query().Get("json"), "1") {
+		return true
+	}
+	for _, part := range strings.Split(r.Header.Get("Accept"), ",") {
+		mediaType := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
+		if mediaType == "application/json" || strings.HasSuffix(mediaType, "+json") {
+			return true
+		}
+	}
+	return false
 }
 
 func copyHeader(dst http.Header, src http.Header, key string) {
