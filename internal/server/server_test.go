@@ -850,6 +850,37 @@ func TestExportEndpointDefaultsToRcloneLikeFormat(t *testing.T) {
 	}
 }
 
+func TestExportEndpointRejectsUnsupportedFormatBeforeExport(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls != 1 {
+			t.Fatalf("unexpected export request %d", calls)
+		}
+		return jsonResponse(http.StatusOK, `{
+			"id":"doc-1",
+			"name":"Notes",
+			"mimeType":"application/vnd.google-apps.document",
+			"exportLinks":{
+				"application/pdf":"https://example.invalid/pdf"
+			}
+		}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/export/doc-1/Notes?format=xlsx", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want metadata only", calls)
+	}
+	if !strings.Contains(rec.Body.String(), "not supported") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
 func TestExportHeadHonorsIfModifiedSince(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {

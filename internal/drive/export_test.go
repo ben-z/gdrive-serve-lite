@@ -61,6 +61,47 @@ func TestExportFormatFor(t *testing.T) {
 	}
 }
 
+func TestSupportsExportFormatUsesExportLinksWhenPresent(t *testing.T) {
+	pdf, err := ExportFormatFor("pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	docx, err := ExportFormatFor("docx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := File{
+		MIMEType: DocumentMIME,
+		ExportLinks: map[string]string{
+			"application/pdf": "https://example.invalid/pdf",
+		},
+	}
+	if !SupportsExportFormat(file, pdf) {
+		t.Fatal("expected pdf to be supported")
+	}
+	if SupportsExportFormat(file, docx) {
+		t.Fatal("did not expect docx to be supported")
+	}
+}
+
+func TestSupportsExportFormatFallsBackToSourceType(t *testing.T) {
+	pdf, err := ExportFormatFor("pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	xlsx, err := ExportFormatFor("xlsx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := File{MIMEType: DocumentMIME}
+	if !SupportsExportFormat(file, pdf) {
+		t.Fatal("expected pdf to be supported")
+	}
+	if SupportsExportFormat(file, xlsx) {
+		t.Fatal("did not expect xlsx to be supported")
+	}
+}
+
 func TestExportUsesFilesExportEndpoint(t *testing.T) {
 	client := NewClientWithHTTPClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
