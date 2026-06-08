@@ -42,6 +42,29 @@ func TestLoadPlainRcloneFile(t *testing.T) {
 	}
 }
 
+func TestLoadRcloneFileRejectsNonDriveRemote(t *testing.T) {
+	path := writeFixture(t, "rclone.conf", `[not-drive]
+type = s3
+client_id = fake-client-id
+token = {"access_token":"fake-access"}
+`)
+	_, err := loadRcloneFile("not-drive", path, "")
+	if err == nil || !strings.Contains(err.Error(), `unsupported type "s3"`) {
+		t.Fatalf("error = %v, want unsupported type", err)
+	}
+}
+
+func TestLoadRcloneFileRejectsMissingType(t *testing.T) {
+	path := writeFixture(t, "rclone.conf", `[not-drive]
+client_id = fake-client-id
+token = {"access_token":"fake-access"}
+`)
+	_, err := loadRcloneFile("not-drive", path, "")
+	if err == nil || !strings.Contains(err.Error(), `unsupported type "<missing>"`) {
+		t.Fatalf("error = %v, want unsupported missing type", err)
+	}
+}
+
 func TestLoadEncryptedRcloneFile(t *testing.T) {
 	path := writeFixture(t, "rclone.conf", fakeEncryptedRcloneConfig)
 	cfg, err := loadRcloneFile("fake-drive", path, "fixture-pass")
