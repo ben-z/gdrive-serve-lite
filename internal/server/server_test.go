@@ -446,6 +446,79 @@ func TestRootPathHTMLFolderLinksEscapeSlashInNames(t *testing.T) {
 	}
 }
 
+func TestBrowsePathPreservesEscapedSlashForResolution(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		query := req.URL.Query().Get("q")
+		switch calls {
+		case 1:
+			if !strings.Contains(query, "'root-folder' in parents") ||
+				!strings.Contains(query, "name = 'A/B?C'") {
+				t.Fatalf("resolve query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"A/B?C","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		case 2:
+			if !strings.Contains(query, "'folder-1' in parents") {
+				t.Fatalf("list query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[]}`), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/browse/A%2FB%3FC", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if !strings.Contains(rec.Body.String(), "/A/B?C") {
+		t.Fatalf("body missing display path:\n%s", rec.Body.String())
+	}
+}
+
+func TestBrowseLinksPreserveEscapedParentPath(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		query := req.URL.Query().Get("q")
+		if !strings.Contains(query, "'folder-1' in parents") {
+			t.Fatalf("query = %q", query)
+		}
+		return jsonResponse(http.StatusOK, `{
+			"files":[
+				{"id":"child-1","name":"child","mimeType":"application/vnd.google-apps.folder"}
+			],
+			"nextPageToken":"tok-2"
+		}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/browse/A%2FB?folderId=folder-1&pageSize=1&limit=1", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"/browse/A%2FB/child?folderId=child-1",
+		"/browse/A%2FB?",
+		"folderId=folder-1",
+		"pageToken=tok-2",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "%252F") {
+		t.Fatalf("body contains double-escaped slash:\n%s", body)
+	}
+}
+
 func TestRootCompatibleFolderPathListsFolder(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {

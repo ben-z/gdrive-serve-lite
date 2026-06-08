@@ -71,6 +71,11 @@ type folderRef struct {
 	ResourceKey string
 }
 
+type folderPath struct {
+	Display string
+	Escaped string
+}
+
 func New(client *drive.Client, rootFolderID string) *Server {
 	return NewWithRootResourceKey(client, rootFolderID, "")
 }
@@ -161,7 +166,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	p := compatiblePath(r)
 	if p == "/" {
-		s.serveFolderPath(w, r, p, s.root)
+		s.serveFolderPath(w, r, rootFolderPath(), s.root)
 		return
 	}
 	item, err := s.resolveItemPath(r, p, "any")
@@ -171,7 +176,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	if isFolderLike(item.File) {
 		id, resourceKey := readableFileIDAndKey(item.File)
-		s.serveFolderPath(w, r, item.Path, folderRef{ID: id, ResourceKey: resourceKey})
+		s.serveFolderPath(w, r, folderPath{Display: item.Path, Escaped: p}, folderRef{ID: id, ResourceKey: resourceKey})
 		return
 	}
 	s.serveResolvedFile(w, r, item.File, item.File.Name)
@@ -411,7 +416,7 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 	_, _ = io.Copy(w, res.Body)
 }
 
-func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p string, folder folderRef) {
+func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p folderPath, folder folderRef) {
 	if r.Method == http.MethodHead {
 		writeFolderHead(w, r)
 		return
@@ -430,7 +435,7 @@ func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p strin
 		return
 	}
 	if wantsJSON(r) {
-		writeJSON(w, http.StatusOK, listResponseWithPath(r, p, folder, list))
+		writeJSON(w, http.StatusOK, listResponseWithPath(r, p.Display, folder, list))
 		return
 	}
 	s.renderBrowse(w, r, p, folder, list)
@@ -485,7 +490,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	p := browsePath(r)
+	p := folderPathFromEscaped(browsePath(r))
 	if r.Method == http.MethodHead {
 		writeFolderHead(w, r)
 		return
@@ -504,7 +509,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if wantsJSON(r) {
-		writeJSON(w, http.StatusOK, listResponseWithPath(r, p, folder, list))
+		writeJSON(w, http.StatusOK, listResponseWithPath(r, p.Display, folder, list))
 		return
 	}
 	s.renderBrowse(w, r, p, folder, list)
@@ -537,24 +542,24 @@ func (s *Server) resolveItemPath(r *http.Request, p string, itemType string) (*d
 	return s.drive.ResolveItemPathWithResourceKey(r.Context(), p, s.root.ID, s.root.ResourceKey, itemType)
 }
 
-func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p string, folder folderRef, list *drive.FileList) {
+func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p folderPath, folder folderRef, list *drive.FileList) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, "<!doctype html><meta charset=\"utf-8\"><title>%s</title>", html.EscapeString(p))
+	fmt.Fprintf(w, "<!doctype html><meta charset=\"utf-8\"><title>%s</title>", html.EscapeString(p.Display))
 	fmt.Fprint(w, "<style>body{font:14px system-ui,sans-serif;margin:24px;max-width:1100px}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}a{text-decoration:none}code{background:#f5f5f5;padding:2px 4px}</style>")
-	fmt.Fprintf(w, "<h1>%s</h1><p><code>%s</code></p>", html.EscapeString(p), html.EscapeString(folder.ID))
+	fmt.Fprintf(w, "<h1>%s</h1><p><code>%s</code></p>", html.EscapeString(p.Display), html.EscapeString(folder.ID))
 	fmt.Fprint(w, "<table><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Modified</th></tr></thead><tbody>")
-	if p != "/" {
-		parent := path.Dir(strings.TrimRight(p, "/"))
+	if p.Escaped != "/" {
+		parent := path.Dir(strings.TrimRight(p.Escaped, "/"))
 		if parent == "." {
 			parent = "/"
 		}
-		fmt.Fprintf(w, "<tr><td><a href=\"%s\">..</a></td><td>folder</td><td></td><td></td></tr>", html.EscapeString("/browse"+urlPath(parent)))
+		fmt.Fprintf(w, "<tr><td><a href=\"%s\">..</a></td><td>folder</td><td></td><td></td></tr>", html.EscapeString("/browse"+parent))
 	}
 	for _, f := range list.Files {
 		name := html.EscapeString(f.Name)
 		if isFolderLike(f) {
 			childID, childResourceKey := readableFileIDAndKey(f)
-			link := withResourceKey("/browse"+urlPathAppend(p, f.Name)+"?folderId="+url.QueryEscape(childID), childResourceKey)
+			link := withResourceKey("/browse"+urlEscapedPathAppend(p.Escaped, f.Name)+"?folderId="+url.QueryEscape(childID), childResourceKey)
 			fmt.Fprintf(w, "<tr><td><a href=\"%s\">%s/</a></td><td>folder</td><td></td><td>%s</td></tr>", html.EscapeString(link), name, html.EscapeString(f.ModifiedTime))
 			continue
 		}
@@ -574,13 +579,13 @@ func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p string, 
 		if folder.ResourceKey != "" {
 			q.Set("resourceKey", folder.ResourceKey)
 		}
-		next := r.URL.Path + "?" + q.Encode()
+		next := "/browse" + p.Escaped + "?" + q.Encode()
 		fmt.Fprintf(w, "<p><a href=\"%s\">Next page</a></p>", html.EscapeString(next))
 	}
 }
 
 func browsePath(r *http.Request) string {
-	p := strings.TrimPrefix(r.URL.Path, "/browse")
+	p := strings.TrimPrefix(escapedPath(r), "/browse")
 	if p == "" {
 		return "/"
 	}
@@ -590,38 +595,60 @@ func browsePath(r *http.Request) string {
 	return path.Clean(p)
 }
 
-func urlPath(p string) string {
-	if p == "/" || p == "." {
+func rootFolderPath() folderPath {
+	return folderPath{Display: "/", Escaped: "/"}
+}
+
+func folderPathFromEscaped(p string) folderPath {
+	return folderPath{Display: displayPathFromEscaped(p), Escaped: cleanEscapedPath(p)}
+}
+
+func displayPathFromEscaped(p string) string {
+	p = cleanEscapedPath(p)
+	if p == "/" {
 		return "/"
 	}
 	parts := strings.Split(strings.Trim(p, "/"), "/")
 	for i := range parts {
-		parts[i] = url.PathEscape(parts[i])
+		if unescaped, err := url.PathUnescape(parts[i]); err == nil {
+			parts[i] = unescaped
+		}
 	}
 	return "/" + strings.Join(parts, "/")
 }
 
-func urlPathAppend(base string, segment string) string {
-	basePath := urlPath(base)
-	if basePath == "/" {
+func urlEscapedPathAppend(base string, segment string) string {
+	base = cleanEscapedPath(base)
+	if base == "/" {
 		return "/" + url.PathEscape(segment)
 	}
-	return strings.TrimRight(basePath, "/") + "/" + url.PathEscape(segment)
+	return strings.TrimRight(base, "/") + "/" + url.PathEscape(segment)
+}
+
+func cleanEscapedPath(p string) string {
+	if p == "" || p == "." {
+		return "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return path.Clean(p)
+}
+
+func escapedPath(r *http.Request) string {
+	p := r.URL.EscapedPath()
+	if p == "" {
+		p = r.URL.Path
+	}
+	return p
 }
 
 func pathRest(r *http.Request, prefix string) string {
-	p := r.URL.EscapedPath()
-	if p == "" {
-		p = r.URL.Path
-	}
-	return strings.TrimPrefix(p, prefix)
+	return strings.TrimPrefix(escapedPath(r), prefix)
 }
 
 func compatiblePath(r *http.Request) string {
-	p := r.URL.EscapedPath()
-	if p == "" {
-		p = r.URL.Path
-	}
+	p := escapedPath(r)
 	if p == "" || p == "/" {
 		return "/"
 	}

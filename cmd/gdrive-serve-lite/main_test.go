@@ -52,4 +52,7 @@ func TestDriveHTTPClientSetsResponseHeaderTimeout(t *testing.T) {
 	if transport.ResponseHeaderTimeout != 7*time.Second {
 		t.Fatalf("ResponseHeaderTimeout = %s", transport.ResponseHeaderTimeout)
 	}
+	if !transport.DisableCompression {
+		t.Fatal("DisableCompression = false, want true")
+	}
 }
