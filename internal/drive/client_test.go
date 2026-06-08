@@ -1,6 +1,15 @@
 package drive
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+
+	"gdrive-serve-lite/internal/config"
+)
 
 func TestQuoteEscapesDriveQueryString(t *testing.T) {
 	got := quote(`quinn's paper\essay`)
@@ -25,5 +34,188 @@ func TestNormalizePageSize(t *testing.T) {
 		if got := normalizePageSize(tt.in); got != tt.want {
 			t.Fatalf("normalizePageSize(%d) = %d, want %d", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestNormalizeLimit(t *testing.T) {
+	tests := []struct {
+		limit    int
+		pageSize int
+		want     int
+	}{
+		{0, 1000, 1000},
+		{-1, 500, 500},
+		{3, 1000, 3},
+		{20000, 1000, 10000},
+	}
+	for _, tt := range tests {
+		if got := normalizeLimit(tt.limit, tt.pageSize); got != tt.want {
+			t.Fatalf("normalizeLimit(%d, %d) = %d, want %d", tt.limit, tt.pageSize, got, tt.want)
+		}
+	}
+}
+
+func TestListChildrenAggregatesPagesToLimit(t *testing.T) {
+	var calls int
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if req.URL.Path != "/drive/v3/files" {
+				t.Fatalf("path = %q", req.URL.Path)
+			}
+			if got := req.Header.Get("Authorization"); got != "Bearer test-access" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			q := req.URL.Query()
+			switch calls {
+			case 1:
+				if q.Get("pageToken") != "" {
+					t.Fatalf("first pageToken = %q", q.Get("pageToken"))
+				}
+				if q.Get("pageSize") != "2" {
+					t.Fatalf("first pageSize = %q", q.Get("pageSize"))
+				}
+				if !strings.Contains(q.Get("q"), "'folder-1' in parents") || !strings.Contains(q.Get("q"), "mimeType != ") {
+					t.Fatalf("query = %q", q.Get("q"))
+				}
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"},{"id":"b","name":"b.mp4"}],"nextPageToken":"tok-2"}`), nil
+			case 2:
+				if q.Get("pageToken") != "tok-2" {
+					t.Fatalf("second pageToken = %q", q.Get("pageToken"))
+				}
+				if q.Get("pageSize") != "1" {
+					t.Fatalf("second pageSize = %q", q.Get("pageSize"))
+				}
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"c","name":"c.mp4"}],"nextPageToken":"tok-3","incompleteSearch":true}`), nil
+			default:
+				t.Fatalf("unexpected request %d", calls)
+				return nil, nil
+			}
+		}),
+	})
+
+	list, err := client.ListChildren(context.Background(), ListOptions{
+		FolderID: "folder-1",
+		Type:     "files",
+		PageSize: 2,
+		Limit:    3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if len(list.Files) != 3 {
+		t.Fatalf("files = %d, want 3", len(list.Files))
+	}
+	if list.NextPageToken != "tok-3" {
+		t.Fatalf("NextPageToken = %q", list.NextPageToken)
+	}
+	if !list.IncompleteSearch {
+		t.Fatal("expected incomplete search to propagate")
+	}
+}
+
+func TestDownloadForwardsRange(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Method != http.MethodGet {
+				t.Fatalf("method = %q", req.Method)
+			}
+			if req.URL.Path != "/drive/v3/files/file-1" {
+				t.Fatalf("path = %q", req.URL.Path)
+			}
+			if req.URL.Query().Get("alt") != "media" {
+				t.Fatalf("alt = %q", req.URL.Query().Get("alt"))
+			}
+			if req.Header.Get("Range") != "bytes=10-19" {
+				t.Fatalf("Range = %q", req.Header.Get("Range"))
+			}
+			resp := textResponse(http.StatusPartialContent, "0123456789")
+			resp.Header.Set("Content-Range", "bytes 10-19/100")
+			return resp, nil
+		}),
+	})
+
+	resp, err := client.Download(context.Background(), http.MethodGet, "file-1", "bytes=10-19")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "0123456789" {
+		t.Fatalf("body = %q", body)
+	}
+	if resp.Header.Get("Content-Range") != "bytes 10-19/100" {
+		t.Fatalf("Content-Range = %q", resp.Header.Get("Content-Range"))
+	}
+}
+
+func TestListChildrenRejectsRepeatedPageToken(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"files":[],"nextPageToken":"same-token"}`), nil
+		}),
+	})
+
+	_, err := client.ListChildren(context.Background(), ListOptions{
+		FolderID: "folder-1",
+		PageSize: 1,
+		Limit:    2,
+	})
+	if err == nil || !strings.Contains(err.Error(), "repeated page token") {
+		t.Fatalf("error = %v, want repeated page token error", err)
+	}
+}
+
+func TestAPIErrorPreservesStatus(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusNotFound, `{"error":{"message":"missing"}}`), nil
+		}),
+	})
+
+	_, err := client.GetFile(context.Background(), "missing")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %v, want APIError", err)
+	}
+	if apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("StatusCode = %d", apiErr.StatusCode)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func testConfig() config.Config {
+	return config.Config{
+		ClientID: "test-client",
+		Token: config.OAuthToken{
+			AccessToken: "test-access",
+			TokenType:   "Bearer",
+		},
+	}
+}
+
+func jsonResponse(status int, body string) *http.Response {
+	resp := textResponse(status, body)
+	resp.Header.Set("Content-Type", "application/json")
+	return resp
+}
+
+func textResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Status:     http.StatusText(status),
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }

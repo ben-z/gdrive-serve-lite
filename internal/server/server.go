@@ -20,6 +20,15 @@ type Server struct {
 	rootFolderID string
 }
 
+type ListResponse struct {
+	FolderID         string       `json:"folderId"`
+	Count            int          `json:"count"`
+	Files            []drive.File `json:"files"`
+	NextPageToken    string       `json:"nextPageToken,omitempty"`
+	Next             string       `json:"next,omitempty"`
+	IncompleteSearch bool         `json:"incompleteSearch,omitempty"`
+}
+
 func New(client *drive.Client, rootFolderID string) *Server {
 	return &Server{drive: client, rootFolderID: rootFolderID}
 }
@@ -27,6 +36,7 @@ func New(client *drive.Client, rootFolderID string) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/api/file", s.handleFileMetadata)
 	mux.HandleFunc("/api/list", s.handleList)
 	mux.HandleFunc("/api/resolve", s.handleResolve)
 	mux.HandleFunc("/file/", s.handleFile)
@@ -78,6 +88,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	opts := drive.ListOptions{
 		FolderID:  folderID,
 		PageSize:  intParam(r, "pageSize", 1000),
+		Limit:     intParam(r, "limit", 0),
 		PageToken: r.URL.Query().Get("pageToken"),
 		OrderBy:   r.URL.Query().Get("orderBy"),
 		Type:      r.URL.Query().Get("type"),
@@ -87,7 +98,25 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, list)
+	writeJSON(w, http.StatusOK, listResponse(r, folderID, list))
+}
+
+func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		writeError(w, errors.New("id is required"))
+		return
+	}
+	file, err := s.drive.GetFile(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, file)
 }
 
 func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
@@ -106,18 +135,11 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid file ID", http.StatusBadRequest)
 		return
 	}
+	_, rawName, _ := strings.Cut(rest, "/")
+	name, _ := url.PathUnescape(rawName)
 
-	meta, err := s.drive.GetFile(r.Context(), fileID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if meta.MIMEType == drive.FolderMIME {
-		http.Error(w, "folders cannot be downloaded", http.StatusBadRequest)
-		return
-	}
-	if strings.HasPrefix(meta.MIMEType, "application/vnd.google-apps.") {
-		http.Error(w, "Google Workspace document export is not implemented yet", http.StatusNotImplemented)
+	if r.Method == http.MethodHead {
+		s.handleFileHead(w, r, fileID, name)
 		return
 	}
 
@@ -134,13 +156,34 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	copyHeader(w.Header(), res.Header, "Accept-Ranges")
 	copyHeader(w.Header(), res.Header, "ETag")
 	copyHeader(w.Header(), res.Header, "Last-Modified")
-	if w.Header().Get("Content-Disposition") == "" {
-		w.Header().Set("Content-Disposition", contentDisposition(meta.Name))
+	if name != "" && w.Header().Get("Content-Disposition") == "" {
+		w.Header().Set("Content-Disposition", contentDisposition(name))
 	}
 	w.WriteHeader(res.StatusCode)
 	if r.Method != http.MethodHead {
 		_, _ = io.Copy(w, res.Body)
 	}
+}
+
+func (s *Server) handleFileHead(w http.ResponseWriter, r *http.Request, fileID string, name string) {
+	meta, err := s.drive.GetFile(r.Context(), fileID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if meta.MIMEType != "" {
+		w.Header().Set("Content-Type", meta.MIMEType)
+	}
+	if meta.Size != "" {
+		w.Header().Set("Content-Length", meta.Size)
+	}
+	if name == "" {
+		name = meta.Name
+	}
+	if name != "" {
+		w.Header().Set("Content-Disposition", contentDisposition(name))
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
@@ -157,6 +200,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	list, err := s.drive.ListChildren(r.Context(), drive.ListOptions{
 		FolderID:  folderID,
 		PageSize:  intParam(r, "pageSize", 1000),
+		Limit:     intParam(r, "limit", 0),
 		PageToken: r.URL.Query().Get("pageToken"),
 		OrderBy:   r.URL.Query().Get("orderBy"),
 		Type:      r.URL.Query().Get("type"),
@@ -255,7 +299,31 @@ func writeError(w http.ResponseWriter, err error) {
 	if strings.Contains(err.Error(), "folderId or path is required") || strings.Contains(err.Error(), "invalid list type") {
 		status = http.StatusBadRequest
 	}
+	if strings.Contains(err.Error(), "id is required") {
+		status = http.StatusBadRequest
+	}
+	var apiErr *drive.APIError
+	if errors.As(err, &apiErr) {
+		status = apiErr.StatusCode
+	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func listResponse(r *http.Request, folderID string, list *drive.FileList) ListResponse {
+	resp := ListResponse{
+		FolderID:         folderID,
+		Count:            len(list.Files),
+		Files:            list.Files,
+		NextPageToken:    list.NextPageToken,
+		IncompleteSearch: list.IncompleteSearch,
+	}
+	if list.NextPageToken != "" {
+		q := r.URL.Query()
+		q.Set("folderId", folderID)
+		q.Set("pageToken", list.NextPageToken)
+		resp.Next = r.URL.Path + "?" + q.Encode()
+	}
+	return resp
 }
 
 func intParam(r *http.Request, name string, fallback int) int {
