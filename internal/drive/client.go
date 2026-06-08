@@ -18,6 +18,7 @@ import (
 const FolderMIME = "application/vnd.google-apps.folder"
 
 const DefaultMetadataCacheTTL = 5 * time.Minute
+const DefaultListCacheTTL = 30 * time.Second
 
 var ErrNotFound = errors.New("not found")
 
@@ -37,9 +38,11 @@ type Client struct {
 	httpClient       *http.Client
 	mu               sync.Mutex
 	metadataCacheTTL time.Duration
+	listCacheTTL     time.Duration
 	cacheMu          sync.RWMutex
 	fileCache        map[string]cachedFile
 	lookupCache      map[string]cachedFiles
+	listCache        map[string]cachedList
 }
 
 type cachedFile struct {
@@ -49,6 +52,11 @@ type cachedFile struct {
 
 type cachedFiles struct {
 	files     []File
+	expiresAt time.Time
+}
+
+type cachedList struct {
+	list      FileList
 	expiresAt time.Time
 }
 
@@ -120,8 +128,10 @@ func NewClientWithHTTPClient(cfg config.Config, httpClient *http.Client) *Client
 		token:            cfg.Token,
 		httpClient:       httpClient,
 		metadataCacheTTL: DefaultMetadataCacheTTL,
+		listCacheTTL:     DefaultListCacheTTL,
 		fileCache:        map[string]cachedFile{},
 		lookupCache:      map[string]cachedFiles{},
+		listCache:        map[string]cachedList{},
 	}
 }
 
@@ -140,12 +150,34 @@ func (c *Client) ClearMetadataCache() {
 	c.lookupCache = map[string]cachedFiles{}
 }
 
+func (c *Client) SetListCacheTTL(ttl time.Duration) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	c.listCacheTTL = ttl
+	c.listCache = map[string]cachedList{}
+}
+
+func (c *Client) ClearListCache() {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	c.listCache = map[string]cachedList{}
+}
+
 func (c *Client) ListChildren(ctx context.Context, opts ListOptions) (*FileList, error) {
 	if opts.FolderID == "" {
 		return nil, errors.New("folder ID is required")
 	}
 	pageSize := normalizePageSize(opts.PageSize)
 	limit := normalizeLimit(opts.Limit, pageSize)
+	listType, err := normalizeListType(opts.Type)
+	if err != nil {
+		return nil, err
+	}
+	opts.Type = listType
+	cacheKey := listCacheKey(opts, pageSize, limit)
+	if cached, ok := c.cachedList(cacheKey); ok {
+		return &cached, nil
+	}
 
 	var combined FileList
 	nextToken := opts.PageToken
@@ -177,16 +209,17 @@ func (c *Client) ListChildren(ctx context.Context, opts ListOptions) (*FileList,
 		}
 		nextToken = page.NextPageToken
 	}
+	c.putCachedList(cacheKey, combined)
 	return &combined, nil
 }
 
 func (c *Client) listChildrenPage(ctx context.Context, opts ListOptions, pageToken string, pageSize int) (*FileList, error) {
 	q := "trashed=false and " + quote(opts.FolderID) + " in parents"
 	switch opts.Type {
-	case "", "all":
+	case "all":
 	case "files":
 		q += " and mimeType != " + quote(FolderMIME)
-	case "dirs", "folders", "directories":
+	case "folders":
 		q += " and mimeType = " + quote(FolderMIME)
 	default:
 		return nil, fmt.Errorf("invalid list type %q", opts.Type)
@@ -578,8 +611,58 @@ func (c *Client) putCachedLookup(key string, files []File) {
 	}
 }
 
+func (c *Client) cachedList(key string) (FileList, bool) {
+	c.cacheMu.RLock()
+	ttl := c.listCacheTTL
+	entry, ok := c.listCache[key]
+	c.cacheMu.RUnlock()
+	if ttl <= 0 || !ok {
+		return FileList{}, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		c.cacheMu.Lock()
+		if current, ok := c.listCache[key]; ok && time.Now().After(current.expiresAt) {
+			delete(c.listCache, key)
+		}
+		c.cacheMu.Unlock()
+		return FileList{}, false
+	}
+	return cloneFileList(entry.list), true
+}
+
+func (c *Client) putCachedList(key string, list FileList) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	if c.listCacheTTL <= 0 {
+		return
+	}
+	c.listCache[key] = cachedList{
+		list:      cloneFileList(list),
+		expiresAt: time.Now().Add(c.listCacheTTL),
+	}
+}
+
 func lookupCacheKey(parentID, name, itemType string) string {
 	return parentID + "\x00" + itemType + "\x00" + name
+}
+
+func listCacheKey(opts ListOptions, pageSize int, limit int) string {
+	return strings.Join([]string{
+		opts.FolderID,
+		opts.Type,
+		opts.PageToken,
+		opts.OrderBy,
+		fmt.Sprintf("%d", pageSize),
+		fmt.Sprintf("%d", limit),
+	}, "\x00")
+}
+
+func cloneFileList(list FileList) FileList {
+	return FileList{
+		Files:            cloneFiles(list.Files),
+		NextPageToken:    list.NextPageToken,
+		IncompleteSearch: list.IncompleteSearch,
+	}
 }
 
 func cloneFiles(files []File) []File {
@@ -619,6 +702,19 @@ func quote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `'`, `\'`)
 	return "'" + s + "'"
+}
+
+func normalizeListType(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "all":
+		return "all", nil
+	case "file", "files":
+		return "files", nil
+	case "folder", "folders", "dir", "dirs", "directory", "directories":
+		return "folders", nil
+	default:
+		return "", fmt.Errorf("invalid list type %q", s)
+	}
 }
 
 func normalizeItemType(s string) (string, error) {

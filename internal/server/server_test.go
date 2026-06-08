@@ -86,6 +86,33 @@ func TestAPIListDefaultsToRootFolder(t *testing.T) {
 	}
 }
 
+func TestAPIListUsesExactListCache(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
+	})
+
+	for range 2 {
+		req := httptest.NewRequest(http.MethodGet, "/api/list?folderId=folder-1&type=files&pageSize=1000&limit=1000", nil)
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+		}
+		var body ListResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Count != 1 {
+			t.Fatalf("Count = %d", body.Count)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
 func TestBasicAuthRejectsUnauthorizedRequests(t *testing.T) {
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		t.Fatal("Drive transport should not be reached")
@@ -759,10 +786,49 @@ func BenchmarkAPIListSinglePage(b *testing.B) {
 		body += fmt.Sprintf(`{"id":"id-%d","name":"file-%d.mp4","mimeType":"video/mp4","size":"100"}`, i, i)
 	}
 	body += `]}`
+	cfg := config.Config{
+		ClientID:     "test-client",
+		RootFolderID: "root-folder",
+		Token: config.OAuthToken{
+			AccessToken: "test-access",
+			TokenType:   "Bearer",
+		},
+	}
+	client := drive.NewClientWithHTTPClient(cfg, &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, body), nil
+	})})
+	client.SetListCacheTTL(0)
+	app := New(client, cfg.RootFolderID)
+	req := httptest.NewRequest(http.MethodGet, "/api/list?folderId=folder-1&type=files&pageSize=1000&limit=1000", nil)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			b.Fatalf("status = %d", rec.Code)
+		}
+	}
+}
+
+func BenchmarkAPIListSinglePageCached(b *testing.B) {
+	body := `{"files":[`
+	for i := range 1000 {
+		if i > 0 {
+			body += ","
+		}
+		body += fmt.Sprintf(`{"id":"id-%d","name":"file-%d.mp4","mimeType":"video/mp4","size":"100"}`, i, i)
+	}
+	body += `]}`
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		return jsonResponse(http.StatusOK, body), nil
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/list?folderId=folder-1&type=files&pageSize=1000&limit=1000", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		b.Fatalf("warm status = %d", rec.Code)
+	}
 
 	b.ReportAllocs()
 	for b.Loop() {

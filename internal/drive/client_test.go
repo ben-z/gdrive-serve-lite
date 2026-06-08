@@ -3,6 +3,7 @@ package drive
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -170,6 +171,85 @@ func TestListChildrenRejectsRepeatedPageToken(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "repeated page token") {
 		t.Fatalf("error = %v, want repeated page token error", err)
+	}
+}
+
+func TestListChildrenUsesExactListCache(t *testing.T) {
+	var calls int
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"original.mp4","mimeType":"video/mp4"}],"nextPageToken":"tok-2"}`), nil
+		}),
+	})
+	opts := ListOptions{FolderID: "folder-1", Type: "files", PageSize: 1000, Limit: 1}
+
+	first, err := client.ListChildren(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Files[0].Name = "mutated.mp4"
+
+	second, err := client.ListChildren(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if second.Files[0].Name != "original.mp4" {
+		t.Fatalf("cached file name = %q, want original.mp4", second.Files[0].Name)
+	}
+	if second.NextPageToken != "tok-2" {
+		t.Fatalf("NextPageToken = %q", second.NextPageToken)
+	}
+}
+
+func TestListCacheKeysPaginationOptions(t *testing.T) {
+	var calls int
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-`+fmt.Sprint(calls)+`","name":"video.mp4"}]}`), nil
+		}),
+	})
+
+	options := []ListOptions{
+		{FolderID: "folder-1", Type: "files", PageSize: 1000, Limit: 1000},
+		{FolderID: "folder-1", Type: "files", PageSize: 1000, Limit: 1000, PageToken: "tok-2"},
+		{FolderID: "folder-1", Type: "files", PageSize: 100, Limit: 100},
+	}
+	for _, opts := range options {
+		if _, err := client.ListChildren(context.Background(), opts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := client.ListChildren(context.Background(), options[0]); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3 exact query cache misses", calls)
+	}
+}
+
+func TestListCacheCanBeDisabled(t *testing.T) {
+	var calls int
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
+		}),
+	})
+	client.SetListCacheTTL(0)
+	opts := ListOptions{FolderID: "folder-1", Type: "files", PageSize: 1000, Limit: 1000}
+
+	for range 2 {
+		if _, err := client.ListChildren(context.Background(), opts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
 	}
 }
 
