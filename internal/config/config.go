@@ -34,15 +34,22 @@ type LoadOptions struct {
 }
 
 func Load(ctx context.Context, opts LoadOptions) (Config, error) {
+	remote := strings.TrimSuffix(opts.Remote, ":")
+	if remote != "" {
+		return loadRcloneConfig(ctx, remote, opts.ConfigPath)
+	}
 	if cfg, ok := loadEnv(); ok {
 		return cfg, nil
 	}
-	remote := strings.TrimSuffix(opts.Remote, ":")
+	return Config{}, errors.New("no auth config found: set GDSL_* env vars or pass --remote")
+}
+
+func loadRcloneConfig(ctx context.Context, remote string, configPath string) (Config, error) {
 	if remote == "" {
 		return Config{}, errors.New("no auth config found: set GDSL_* env vars or pass --remote")
 	}
 
-	cfg, err := loadRcloneFile(remote, opts.ConfigPath, os.Getenv("RCLONE_CONFIG_PASS"))
+	cfg, err := loadRcloneFile(remote, configPath, os.Getenv("RCLONE_CONFIG_PASS"))
 	if err == nil {
 		return cfg, nil
 	}

@@ -36,7 +36,7 @@ go build ./cmd/gdrive-serve-lite
   --addr 127.0.0.1:8765
 ```
 
-The `--config` flag is optional. If omitted, the server checks `RCLONE_CONFIG`, then the usual rclone config locations.
+The `--config` flag is optional. If omitted, the server checks `RCLONE_CONFIG`, then the usual rclone config locations. When `--remote` is provided, that explicit rclone remote is used even if `GDSL_*` environment variables are also present. Environment auth is used when no remote is requested.
 
 The `--remote` flag accepts either a remote name or the familiar rclone `remote:path` form. The path portion is resolved once at startup and used as the served root. You can also pass `--root-path /path/from/drive/root`; `--root-folder-id` is the fastest and most precise root selector when you already know the Drive folder ID. Use `--root-resource-key` with `--root-folder-id` for a link-shared root folder that requires a Drive resource key.
 
