@@ -708,7 +708,7 @@ func listResponse(r *http.Request, folder folderRef, list *drive.FileList) ListR
 		FolderID:         folder.ID,
 		ResourceKey:      folder.ResourceKey,
 		Count:            len(list.Files),
-		Files:            list.Files,
+		Files:            listFiles(list.Files, includeEntryURLs(r)),
 		NextPageToken:    list.NextPageToken,
 		IncompleteSearch: list.IncompleteSearch,
 	}
@@ -722,6 +722,45 @@ func listResponse(r *http.Request, folder folderRef, list *drive.FileList) ListR
 		resp.Next = escapedPath(r) + "?" + q.Encode()
 	}
 	return resp
+}
+
+func listFiles(files []drive.File, includeURLs bool) []drive.File {
+	if len(files) == 0 {
+		return nil
+	}
+	if !includeURLs {
+		return files
+	}
+	withURLs := make([]drive.File, len(files))
+	for i, file := range files {
+		withURLs[i] = file
+		withURLs[i].URL = entryURL(file)
+	}
+	return withURLs
+}
+
+func entryURL(file drive.File) string {
+	id, resourceKey := readableFileIDAndKey(file)
+	if id == "" {
+		return ""
+	}
+	if isFolderLike(file) {
+		return withResourceKey("/browse?folderId="+url.QueryEscape(id), resourceKey)
+	}
+	link := "/file/" + url.PathEscape(id) + "/" + url.PathEscape(file.Name)
+	if format, ok := defaultExportForResponse(file); ok {
+		link = "/export/" + url.PathEscape(id) + "/" + url.PathEscape(exportName(file.Name, format))
+	}
+	return withResourceKey(link, resourceKey)
+}
+
+func includeEntryURLs(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("links"))) {
+	case "1", "true", "yes", "urls", "url":
+		return true
+	default:
+		return false
+	}
 }
 
 func listResponseWithPath(r *http.Request, p string, folder folderRef, list *drive.FileList) ListResponse {

@@ -179,6 +179,73 @@ func TestAPIListForwardsFolderResourceKey(t *testing.T) {
 	}
 }
 
+func TestAPIListIncludesReadyEntryURLs(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{
+			"files":[
+				{"id":"folder-1","name":"Shared","mimeType":"application/vnd.google-apps.folder","resourceKey":"folder-key-1"},
+				{"id":"file-1","name":"100%/done.mp4","mimeType":"video/mp4","resourceKey":"file-key-1"},
+				{"id":"doc-1","name":"Notes","mimeType":"application/vnd.google-apps.document","resourceKey":"doc-key-1","exportLinks":{"application/vnd.openxmlformats-officedocument.wordprocessingml.document":"https://example.invalid/docx"}},
+				{"id":"shortcut-1","name":"shortcut.mp4","mimeType":"application/vnd.google-apps.shortcut","shortcutDetails":{"targetId":"file-2","targetMimeType":"video/mp4","targetResourceKey":"target-key-1"}},
+				{"id":"shortcut-2","name":"folder shortcut","mimeType":"application/vnd.google-apps.shortcut","shortcutDetails":{"targetId":"folder-2","targetMimeType":"application/vnd.google-apps.folder","targetResourceKey":"folder-target-key"}}
+			]
+		}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/list?folderId=root-folder&pageSize=1000&limit=1000&links=1", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]string, len(body.Files))
+	for _, file := range body.Files {
+		got[file.Name] = file.URL
+	}
+	want := map[string]string{
+		"Shared":          "/browse?folderId=folder-1&resourceKey=folder-key-1",
+		"100%/done.mp4":   "/file/file-1/100%25%2Fdone.mp4?resourceKey=file-key-1",
+		"Notes":           "/export/doc-1/Notes.docx?resourceKey=doc-key-1",
+		"shortcut.mp4":    "/file/file-2/shortcut.mp4?resourceKey=target-key-1",
+		"folder shortcut": "/browse?folderId=folder-2&resourceKey=folder-target-key",
+	}
+	for name, wantURL := range want {
+		if got[name] != wantURL {
+			t.Fatalf("url for %q = %q, want %q; body=%s", name, got[name], wantURL, rec.Body.String())
+		}
+	}
+}
+
+func TestAPIListOmitsReadyEntryURLsByDefault(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}]}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/list?folderId=root-folder&pageSize=1000&limit=1000", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Files) != 1 {
+		t.Fatalf("files = %d, want 1", len(body.Files))
+	}
+	if body.Files[0].URL != "" {
+		t.Fatalf("URL = %q, want empty by default", body.Files[0].URL)
+	}
+	if strings.Contains(rec.Body.String(), `"url"`) {
+		t.Fatalf("body should not include url by default: %s", rec.Body.String())
+	}
+}
+
 func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	tests := []struct {
 		path  string
