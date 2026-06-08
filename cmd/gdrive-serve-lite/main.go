@@ -27,6 +27,7 @@ func main() {
 	driveResponseHeaderTimeout := flag.Duration("drive-response-header-timeout", 30*time.Second, "maximum wait for Google API response headers; 0 disables")
 	httpUser := flag.String("user", "", "HTTP basic auth username; requires --pass")
 	httpPass := flag.String("pass", "", "HTTP basic auth password; requires --user")
+	allowOrigin := flag.String("allow-origin", "", "optional CORS origin to allow, for example http://localhost:3000 or *")
 	flag.Parse()
 	if (*httpUser == "") != (*httpPass == "") {
 		log.Fatal("--user and --pass must be set together")
@@ -76,6 +77,7 @@ func main() {
 	}
 	app := server.NewWithRootResourceKey(client, effectiveRootID, effectiveRootResourceKey)
 	app.SetBasicAuth(*httpUser, *httpPass)
+	app.SetAllowOrigin(*allowOrigin)
 	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           app.Handler(),
