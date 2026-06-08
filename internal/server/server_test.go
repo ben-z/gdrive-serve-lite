@@ -179,6 +179,44 @@ func TestAPIListForwardsFolderResourceKey(t *testing.T) {
 	}
 }
 
+func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
+	tests := []struct {
+		path  string
+		allow string
+	}{
+		{"/api/list", "GET"},
+		{"/api/file?id=file-1", "GET"},
+		{"/file/file-1/video.mp4", "GET, HEAD"},
+		{"/export/doc-1/Notes", "GET, HEAD"},
+		{"/path/folder/video.mp4", "GET, HEAD"},
+		{"/browse/folder", "GET, HEAD"},
+		{"/folder/video.mp4", "GET, HEAD"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			var calls int
+			app := testServer(func(req *http.Request) (*http.Response, error) {
+				calls++
+				t.Fatalf("unexpected Drive request for method rejection: %s %s", req.Method, req.URL.String())
+				return nil, nil
+			})
+
+			req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+			rec := httptest.NewRecorder()
+			app.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			if rec.Header().Get("Allow") != tt.allow {
+				t.Fatalf("Allow = %q, want %q", rec.Header().Get("Allow"), tt.allow)
+			}
+			if calls != 0 {
+				t.Fatalf("calls = %d, want none", calls)
+			}
+		})
+	}
+}
+
 func TestBasicAuthRejectsUnauthorizedRequests(t *testing.T) {
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		t.Fatal("Drive transport should not be reached")
