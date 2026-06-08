@@ -19,7 +19,12 @@ func main() {
 	rootFolderID := flag.String("root-folder-id", "", "Drive folder ID to use as browse/resolve root")
 	driveID := flag.String("drive-id", "", "shared drive ID override")
 	metadataCacheTTL := flag.Duration("metadata-cache-ttl", drive.DefaultMetadataCacheTTL, "positive metadata/path lookup cache TTL; 0 disables")
+	httpUser := flag.String("user", "", "HTTP basic auth username; requires --pass")
+	httpPass := flag.String("pass", "", "HTTP basic auth password; requires --user")
 	flag.Parse()
+	if (*httpUser == "") != (*httpPass == "") {
+		log.Fatal("--user and --pass must be set together")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -44,6 +49,7 @@ func main() {
 	client := drive.NewClient(cfg)
 	client.SetMetadataCacheTTL(*metadataCacheTTL)
 	app := server.New(client, cfg.EffectiveRootFolderID())
+	app.SetBasicAuth(*httpUser, *httpPass)
 	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           app.Handler(),
