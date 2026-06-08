@@ -133,6 +133,7 @@ That rclone-generated encrypted fixture is covered by unit tests.
 - positive metadata/path lookup cache with TTL
 - exact-query directory/list response cache with TTL; cache keys include page token and pagination knobs
 - optional HTTP Basic Auth with `--user` and `--pass`
+- rclone-style `--remote remote:path` root selection, resolved once at startup
 
 ## Local timings that motivated this
 

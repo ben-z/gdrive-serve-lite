@@ -26,9 +26,8 @@ go build ./cmd/gdrive-serve-lite
 
 ```sh
 ./gdrive-serve-lite \
-  --remote gdrive-ro \
+  --remote gdrive-ro:/teslacam1/RecentClips \
   --config ~/.config/rclone/rclone.conf \
-  --root-folder-id 1-jJX3Mj7V6Afs-Elmr3g6AgwFo5KLgCM \
   --metadata-cache-ttl 5m \
   --list-cache-ttl 30s \
   --user ben \
@@ -37,6 +36,8 @@ go build ./cmd/gdrive-serve-lite
 ```
 
 The `--config` flag is optional. If omitted, the server checks `RCLONE_CONFIG`, then the usual rclone config locations.
+
+The `--remote` flag accepts either a remote name or the familiar rclone `remote:path` form. The path portion is resolved once at startup and used as the served root. You can also pass `--root-path /path/from/drive/root`; `--root-folder-id` is the fastest and most precise root selector when you already know the Drive folder ID.
 
 If your rclone config is encrypted, provide `RCLONE_CONFIG_PASS` or use the environment variables below:
 
