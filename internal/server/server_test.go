@@ -951,6 +951,51 @@ func TestPathEndpointForwardsResolvedResourceKey(t *testing.T) {
 	}
 }
 
+func TestPathEndpointCarriesFolderResourceKeyDuringResolution(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "" {
+				t.Fatalf("first resource key header = %q", got)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"Shared","mimeType":"application/vnd.google-apps.folder","resourceKey":"folder-key-1"}]}`), nil
+		case 2:
+			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "folder-1/folder-key-1" {
+				t.Fatalf("second resource key header = %q", got)
+			}
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "'folder-1' in parents") ||
+				!strings.Contains(query, "name = 'video.mp4'") {
+				t.Fatalf("file query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","resourceKey":"file-key-1"}]}`), nil
+		case 3:
+			if req.URL.Query().Get("alt") != "media" {
+				t.Fatalf("alt = %q", req.URL.Query().Get("alt"))
+			}
+			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "file-1/file-key-1" {
+				t.Fatalf("media resource key header = %q", got)
+			}
+			return textResponse(http.StatusOK, "ok"), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/path/Shared/video.mp4", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+}
+
 func TestPathEndpointFollowsShortcutTargetResourceKey(t *testing.T) {
 	var calls int
 	app := testServer(func(req *http.Request) (*http.Response, error) {

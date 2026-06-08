@@ -10,6 +10,7 @@ Build a Google Drive-specific HTTP server that covers the useful read-only parts
 - Google Drive search query guide: https://developers.google.com/workspace/drive/api/guides/search-files
 - Google Drive download/export guide: https://developers.google.cn/workspace/drive/api/guides/manage-downloads?hl=en
 - Google Drive resource key guide: https://developers.google.com/workspace/drive/api/guides/resource-keys
+- Google Drive shortcut guide: https://developers.google.com/workspace/drive/api/guides/shortcuts
 - Google OAuth 2.0 overview and installed app docs: https://developers.google.com/identity/protocols/oauth2 and https://developers.google.com/identity/protocols/oauth2/native-app
 - rclone `serve http` docs: https://rclone.org/commands/rclone_serve_http/
 
@@ -83,7 +84,9 @@ GET https://www.googleapis.com/drive/v3/files/{fileId}/export?mimeType=...
 
 Exports are all-at-once reads and are capped by Drive, so the server rejects `Range` for exports instead of pretending media seeking works there. Blob reads remain the fast path: `GET /file/{id}` still maps directly to one `alt=media` request.
 
-Drive link-shared files can require resource keys. The Drive API returns them in `resourceKey`, and shortcut target keys in `shortcutDetails.targetResourceKey`. Requests that need them use the `X-Goog-Drive-Resource-Keys` header with `fileId/resourceKey` pairs. Path-based reads can use the key from metadata; ID-based reads accept `resourceKey=...`.
+Drive link-shared files can require resource keys. The Drive API returns them in `resourceKey`, and shortcut target keys in `shortcutDetails.targetResourceKey`. Requests that need them use the `X-Goog-Drive-Resource-Keys` header with `fileId/resourceKey` pairs. Path-based reads can use the key from metadata for both later segment lookups and the final read; ID-based reads accept `resourceKey=...`.
+
+Drive shortcuts are ordinary files with MIME type `application/vnd.google-apps.shortcut`. The shortcuts guide documents searching by `shortcutDetails.targetMimeType`, so path resolution treats folder shortcuts as folders by asking Drive for either real folders or shortcuts whose target MIME type is the Drive folder MIME type.
 
 ### OAuth
 
