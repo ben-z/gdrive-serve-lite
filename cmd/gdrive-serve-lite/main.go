@@ -19,6 +19,7 @@ func main() {
 	rootFolderID := flag.String("root-folder-id", "", "Drive folder ID to use as browse/resolve root")
 	driveID := flag.String("drive-id", "", "shared drive ID override")
 	metadataCacheTTL := flag.Duration("metadata-cache-ttl", drive.DefaultMetadataCacheTTL, "positive metadata/path lookup cache TTL; 0 disables")
+	listCacheTTL := flag.Duration("list-cache-ttl", drive.DefaultListCacheTTL, "exact directory/list response cache TTL; 0 disables")
 	httpUser := flag.String("user", "", "HTTP basic auth username; requires --pass")
 	httpPass := flag.String("pass", "", "HTTP basic auth password; requires --user")
 	flag.Parse()
@@ -48,6 +49,7 @@ func main() {
 
 	client := drive.NewClient(cfg)
 	client.SetMetadataCacheTTL(*metadataCacheTTL)
+	client.SetListCacheTTL(*listCacheTTL)
 	app := server.New(client, cfg.EffectiveRootFolderID())
 	app.SetBasicAuth(*httpUser, *httpPass)
 	httpServer := &http.Server{
@@ -56,7 +58,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("gdrive-serve-lite listening on http://%s (config=%s root=%s metadataCacheTTL=%s)", *addr, cfg.Source, cfg.EffectiveRootFolderID(), metadataCacheTTL.String())
+	log.Printf("gdrive-serve-lite listening on http://%s (config=%s root=%s metadataCacheTTL=%s listCacheTTL=%s)", *addr, cfg.Source, cfg.EffectiveRootFolderID(), metadataCacheTTL.String(), listCacheTTL.String())
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}

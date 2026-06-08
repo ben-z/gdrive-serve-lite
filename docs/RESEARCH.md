@@ -130,7 +130,8 @@ That rclone-generated encrypted fixture is covered by unit tests.
 - metadata endpoint separated from media streaming, so GET reads stay one upstream request
 - rclone-like root-relative folder and file paths, with file-ID streaming kept as the fastest path
 - Workspace document export through Drive's `files.export`, kept separate from blob media reads
-- positive metadata/path lookup cache with TTL; listing pages stay uncached so pagination remains Drive-native
+- positive metadata/path lookup cache with TTL
+- exact-query directory/list response cache with TTL; cache keys include page token and pagination knobs
 - optional HTTP Basic Auth with `--user` and `--pass`
 
 ## Local timings that motivated this
@@ -163,7 +164,6 @@ GET /healthz
 
 ## Backlog
 
-- optional directory page cache with TTL
 - thumbnail endpoint
 - stricter sort/filter allowlist
 - persistent token store independent of rclone
