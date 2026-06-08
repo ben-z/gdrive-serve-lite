@@ -139,7 +139,7 @@ http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4
 http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4?resourceKey=RESOURCE_KEY
 ```
 
-`GET /file/...` forwards directly to Drive `alt=media` and preserves `Range` plus standard conditional read headers such as `If-None-Match`, `If-Modified-Since`, and `If-Range`, so media seeking and cache validation are single upstream Drive requests. Media read status codes and headers, including range errors like `416` with `Content-Range`, are passed through. `HEAD /file/...` uses one metadata request and returns length/type headers without streaming file bytes.
+`GET /file/...` forwards directly to Drive `alt=media` and preserves `Range` plus standard conditional read headers such as `If-None-Match`, `If-Modified-Since`, and `If-Range`, so media seeking and cache validation are single upstream Drive requests. Media read status codes and headers, including `Content-Disposition` and range errors like `416` with `Content-Range`, are passed through. `HEAD /file/...` uses one metadata request and returns length/type headers without streaming file bytes.
 
 If Drive returns a `resourceKey` or `shortcutDetails.targetResourceKey` in metadata, path-based reads, multi-segment path resolution, and generated browser links automatically pass it through on the upstream Drive request. ID-based endpoints accept `resourceKey=...` explicitly.
 
@@ -150,7 +150,7 @@ http://127.0.0.1:8765/export/GOOGLE_DOC_FILE_ID/name.docx
 http://127.0.0.1:8765/export/GOOGLE_DOC_FILE_ID/name.pdf?format=pdf
 ```
 
-If no `format` or `mimeType` is provided, the server defaults to rclone-like export formats: Docs as `docx`, Sheets as `xlsx`, Slides as `pptx`, Drawings as `svg`, Apps Script as `json`, and Google Vids as `mp4`. After local format validation, Drive export responses are passed through with Drive's status, body, and read headers. Drive exports do not support HTTP range reads, so `Range` requests are rejected for `/export/...`.
+If no `format` or `mimeType` is provided, the server defaults to rclone-like export formats: Docs as `docx`, Sheets as `xlsx`, Slides as `pptx`, Drawings as `svg`, Apps Script as `json`, and Google Vids as `mp4`. After local format validation, Drive export responses are passed through with Drive's status, body, `Content-Disposition`, and other read headers. Drive exports do not support HTTP range reads, so `Range` requests are rejected for `/export/...`.
 
 You can also stream by path:
 

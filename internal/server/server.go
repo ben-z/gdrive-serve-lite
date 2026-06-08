@@ -293,6 +293,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	copyHeader(w.Header(), res.Header, "Accept-Ranges")
 	copyHeader(w.Header(), res.Header, "ETag")
 	copyHeader(w.Header(), res.Header, "Last-Modified")
+	copyHeader(w.Header(), res.Header, "Content-Disposition")
 	if isReadSuccess(res.StatusCode) && name != "" && w.Header().Get("Content-Disposition") == "" {
 		w.Header().Set("Content-Disposition", contentDisposition(name))
 	}
@@ -357,6 +358,7 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 	copyHeader(w.Header(), res.Header, "Accept-Ranges")
 	copyHeader(w.Header(), res.Header, "ETag")
 	copyHeader(w.Header(), res.Header, "Last-Modified")
+	copyHeader(w.Header(), res.Header, "Content-Disposition")
 	if isReadSuccess(res.StatusCode) && name != "" && w.Header().Get("Content-Disposition") == "" {
 		w.Header().Set("Content-Disposition", contentDisposition(name))
 	}
@@ -423,6 +425,7 @@ func (s *Server) streamExport(w http.ResponseWriter, r *http.Request, file drive
 	copyHeader(w.Header(), res.Header, "Content-Length")
 	copyHeader(w.Header(), res.Header, "ETag")
 	copyHeader(w.Header(), res.Header, "Last-Modified")
+	copyHeader(w.Header(), res.Header, "Content-Disposition")
 	if isReadSuccess(res.StatusCode) && w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", format.MIMEType)
 	}

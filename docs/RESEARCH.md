@@ -74,7 +74,7 @@ GET https://www.googleapis.com/drive/v3/files/{fileId}?alt=media
 
 The Drive download guide documents partial downloads via the HTTP `Range` header. That is essential for video playback and seeking.
 
-The media endpoint also forwards standard HTTP validator headers (`If-None-Match`, `If-Modified-Since`, `If-Match`, `If-Unmodified-Since`, and `If-Range`) to Drive. This keeps browser cache validation and range revalidation as one upstream Drive request while avoiding broad forwarding of unrelated local request headers. Media read responses are passed through raw after auth/refresh, including `416` range errors and their `Content-Range` header.
+The media endpoint also forwards standard HTTP validator headers (`If-None-Match`, `If-Modified-Since`, `If-Match`, `If-Unmodified-Since`, and `If-Range`) to Drive. This keeps browser cache validation and range revalidation as one upstream Drive request while avoiding broad forwarding of unrelated local request headers. Media read responses are passed through raw after auth/refresh, including Drive `Content-Disposition` values, `416` range errors, and their `Content-Range` header.
 
 Google Workspace document export is separate:
 
@@ -82,7 +82,7 @@ Google Workspace document export is separate:
 GET https://www.googleapis.com/drive/v3/files/{fileId}/export?mimeType=...
 ```
 
-Exports are all-at-once reads and are capped by Drive, so the server rejects `Range` for exports instead of pretending media seeking works there. After local format validation, export responses use the same raw pass-through model as media reads so Drive status codes and error bodies remain intact. Blob reads remain the fast path: `GET /file/{id}` still maps directly to one `alt=media` request.
+Exports are all-at-once reads and are capped by Drive, so the server rejects `Range` for exports instead of pretending media seeking works there. After local format validation, export responses use the same raw pass-through model as media reads so Drive status codes, error bodies, and read headers remain intact. Blob reads remain the fast path: `GET /file/{id}` still maps directly to one `alt=media` request.
 
 Drive link-shared files can require resource keys. The Drive API returns them in `resourceKey`, and shortcut target keys in `shortcutDetails.targetResourceKey`. Requests that need them use the `X-Goog-Drive-Resource-Keys` header with `fileId/resourceKey` pairs. Path-based reads can use the key from metadata for both later segment lookups and the final read; ID-based reads accept `resourceKey=...`.
 
