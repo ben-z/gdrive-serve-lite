@@ -229,9 +229,9 @@ func (c *Client) listChildrenPage(ctx context.Context, opts ListOptions, pageTok
 	switch opts.Type {
 	case "all":
 	case "files":
-		q += " and mimeType != " + quote(FolderMIME)
+		q += " and " + nonFolderLikeQuery()
 	case "folders":
-		q += " and mimeType = " + quote(FolderMIME)
+		q += " and " + folderLikeQuery()
 	default:
 		return nil, fmt.Errorf("invalid list type %q", opts.Type)
 	}
@@ -434,9 +434,9 @@ func (c *Client) findItemsByName(ctx context.Context, parentID, parentResourceKe
 	switch itemType {
 	case "any":
 	case "file":
-		q += " and (mimeType != " + quote(FolderMIME) + " and (mimeType != " + quote(ShortcutMIME) + " or shortcutDetails.targetMimeType != " + quote(FolderMIME) + "))"
+		q += " and " + nonFolderLikeQuery()
 	case "folder":
-		q += " and (mimeType = " + quote(FolderMIME) + " or (mimeType = " + quote(ShortcutMIME) + " and shortcutDetails.targetMimeType = " + quote(FolderMIME) + "))"
+		q += " and " + folderLikeQuery()
 	}
 	values := c.baseListValues()
 	values.Set("q", q)
@@ -807,6 +807,14 @@ func filterResolvedItems(files []File, itemType string) []File {
 		}
 	}
 	return filtered
+}
+
+func folderLikeQuery() string {
+	return "(mimeType = " + quote(FolderMIME) + " or (mimeType = " + quote(ShortcutMIME) + " and shortcutDetails.targetMimeType = " + quote(FolderMIME) + "))"
+}
+
+func nonFolderLikeQuery() string {
+	return "(mimeType != " + quote(FolderMIME) + " and (mimeType != " + quote(ShortcutMIME) + " or shortcutDetails.targetMimeType != " + quote(FolderMIME) + "))"
 }
 
 func effectiveMIMEType(file File) string {
