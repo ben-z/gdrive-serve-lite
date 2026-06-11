@@ -1955,6 +1955,33 @@ func TestWriteErrorStatusMapping(t *testing.T) {
 			wantBody:   "id is required",
 		},
 		{
+			name:   "list path not found",
+			target: "/api/list?path=/missing",
+			rt: func(req *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, `{"files":[]}`), nil
+			},
+			wantStatus: http.StatusNotFound,
+			wantBody:   "not found",
+		},
+		{
+			name:   "browse path not found",
+			target: "/browse/missing",
+			rt: func(req *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, `{"files":[]}`), nil
+			},
+			wantStatus: http.StatusNotFound,
+			wantBody:   "not found",
+		},
+		{
+			name:   "browse list drive error passthrough",
+			target: "/browse?folderId=folder-1",
+			rt: func(req *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusForbidden, `{"error":"rate"}`), nil
+			},
+			wantStatus: http.StatusForbidden,
+			wantBody:   "Drive API",
+		},
+		{
 			name:   "drive api status passthrough",
 			target: "/api/file?id=file-1",
 			rt: func(req *http.Request) (*http.Response, error) {
@@ -2192,6 +2219,51 @@ func TestFileHeadWithoutNameFallsBackToMetadataName(t *testing.T) {
 	}
 	if !strings.Contains(rec.Header().Get("Content-Disposition"), "Notes") {
 		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+}
+
+func TestExportHeadWithoutNameFallsBackToMetadataName(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Query().Get("alt") != "" {
+			t.Fatalf("unexpected media request alt=%q", req.URL.Query().Get("alt"))
+		}
+		return jsonResponse(http.StatusOK, `{"id":"doc-1","name":"Notes","mimeType":"application/vnd.google-apps.document","modifiedTime":"2026-06-08T12:34:56Z"}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodHead, "/export/doc-1", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != docxMIME {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), "Notes.docx") {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+	if rec.Header().Get("Last-Modified") != "Mon, 08 Jun 2026 12:34:56 GMT" {
+		t.Fatalf("Last-Modified = %q", rec.Header().Get("Last-Modified"))
+	}
+}
+
+func TestAPIListUsesExactListCache(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
+	})
+
+	for range 2 {
+		req := httptest.NewRequest(http.MethodGet, "/api/list?folderId=folder-1&type=files&pageSize=1000&limit=1000", nil)
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
 	}
 }
 

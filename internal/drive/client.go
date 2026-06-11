@@ -347,16 +347,13 @@ var mediaRequestHeaders = []string{
 
 // Download streams file content via alt=media, forwarding the
 // media-relevant request headers and the Drive response as-is.
-func (c *Client) Download(ctx context.Context, method, id string, headers http.Header, resourceKey string) (*http.Response, error) {
+func (c *Client) Download(ctx context.Context, id string, headers http.Header, resourceKey string) (*http.Response, error) {
 	if id == "" {
 		return nil, errors.New("file ID is required")
 	}
-	if method == "" {
-		method = http.MethodGet
-	}
 	values := c.baseGetValues()
 	values.Set("alt", "media")
-	req, err := http.NewRequestWithContext(ctx, method, "https://www.googleapis.com/drive/v3/files/"+url.PathEscape(id)+"?"+values.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/drive/v3/files/"+url.PathEscape(id)+"?"+values.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -551,7 +548,7 @@ func (c *Client) accessToken(ctx context.Context, force bool) (string, error) {
 type ttlCache[T any] struct {
 	clone func(T) T
 
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	ttl     time.Duration
 	entries map[string]ttlEntry[T]
 }
@@ -565,17 +562,23 @@ func newTTLCache[T any](ttl time.Duration, clone func(T) T) *ttlCache[T] {
 	return &ttlCache[T]{clone: clone, ttl: ttl, entries: map[string]ttlEntry[T]{}}
 }
 
+// get clones outside the lock so concurrent hits do not serialize on the
+// copy; entries are never mutated in place, only replaced by put.
 func (c *ttlCache[T]) get(key string) (value T, ok bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	ttl := c.ttl
 	entry, ok := c.entries[key]
-	if c.ttl <= 0 || !ok {
-		var zero T
+	c.mu.RUnlock()
+	var zero T
+	if ttl <= 0 || !ok {
 		return zero, false
 	}
 	if time.Now().After(entry.expiresAt) {
-		delete(c.entries, key)
-		var zero T
+		c.mu.Lock()
+		if current, ok := c.entries[key]; ok && time.Now().After(current.expiresAt) {
+			delete(c.entries, key)
+		}
+		c.mu.Unlock()
 		return zero, false
 	}
 	return c.clone(entry.value), true

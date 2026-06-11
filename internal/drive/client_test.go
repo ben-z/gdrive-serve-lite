@@ -184,7 +184,7 @@ func TestDownloadForwardsConditionalHeaders(t *testing.T) {
 	headers.Set("If-None-Match", `"etag-1"`)
 	headers.Set("If-Modified-Since", "Mon, 08 Jun 2026 07:00:00 GMT")
 	headers.Set("Cookie", "local=only")
-	resp, err := client.Download(context.Background(), http.MethodGet, "file-1", headers, "")
+	resp, err := client.Download(context.Background(), "file-1", headers, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestDownloadRefreshesAndRetriesUnauthorized(t *testing.T) {
 		}),
 	})
 
-	resp, err := client.Download(context.Background(), http.MethodGet, "file-1", nil, "")
+	resp, err := client.Download(context.Background(), "file-1", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +640,7 @@ func TestResourceKeyHeaderForwarding(t *testing.T) {
 			name: "download",
 			want: "file-1/resource-key-1",
 			do: func(ctx context.Context, c *Client) error {
-				res, err := c.Download(ctx, http.MethodGet, "file-1", nil, "resource-key-1")
+				res, err := c.Download(ctx, "file-1", nil, "resource-key-1")
 				if err == nil {
 					res.Body.Close()
 				}

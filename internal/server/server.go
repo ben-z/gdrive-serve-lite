@@ -405,7 +405,7 @@ func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p folde
 // through, adding a Content-Disposition for the requested name when Drive
 // does not supply one.
 func (s *Server) proxyDownload(w http.ResponseWriter, r *http.Request, id, resourceKey, name string) {
-	res, err := s.drive.Download(r.Context(), r.Method, id, r.Header, resourceKey)
+	res, err := s.drive.Download(r.Context(), id, r.Header, resourceKey)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -502,13 +502,7 @@ func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p folderPa
 			fmt.Fprintf(w, "<tr><td><a href=\"%s\">%s/</a></td><td>folder</td><td></td><td>%s</td></tr>", html.EscapeString(link), name, html.EscapeString(f.ModifiedTime))
 			continue
 		}
-		fileID, resourceKey := f.TargetIDAndKey()
-		link := s.link("/file/" + url.PathEscape(fileID) + "/" + url.PathEscape(f.Name))
-		if format, ok := defaultExportForResponse(f); ok {
-			link = s.link("/export/" + url.PathEscape(fileID) + "/" + url.PathEscape(exportName(f.Name, format)))
-		}
-		link = withResourceKey(link, resourceKey)
-		fmt.Fprintf(w, "<tr><td><a href=\"%s\">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>", html.EscapeString(link), name, html.EscapeString(f.MIMEType), html.EscapeString(f.Size), html.EscapeString(f.ModifiedTime))
+		fmt.Fprintf(w, "<tr><td><a href=\"%s\">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>", html.EscapeString(s.fileLink(f)), name, html.EscapeString(f.MIMEType), html.EscapeString(f.Size), html.EscapeString(f.ModifiedTime))
 	}
 	fmt.Fprint(w, "</tbody></table>")
 	if list.NextPageToken != "" {
@@ -562,11 +556,7 @@ func cleanEscapedPath(p string) string {
 // escapedPath returns the path with percent-escapes intact, so escaped
 // slashes in Drive names survive routing.
 func escapedPath(r *http.Request) string {
-	p := r.URL.EscapedPath()
-	if p == "" {
-		p = r.URL.Path
-	}
-	return p
+	return r.URL.EscapedPath()
 }
 
 func basePathMiddleware(basePath string, next http.Handler) http.Handler {
@@ -743,6 +733,13 @@ func (s *Server) entryURL(file drive.File) string {
 	if file.IsFolder() {
 		return withResourceKey(s.link("/browse?folderId="+url.QueryEscape(id)), resourceKey)
 	}
+	return s.fileLink(file)
+}
+
+// fileLink returns the read link for a non-folder entry: the export route
+// when the file has a default export format, the blob route otherwise.
+func (s *Server) fileLink(file drive.File) string {
+	id, resourceKey := file.TargetIDAndKey()
 	link := s.link("/file/" + url.PathEscape(id) + "/" + url.PathEscape(file.Name))
 	if format, ok := defaultExportForResponse(file); ok {
 		link = s.link("/export/" + url.PathEscape(id) + "/" + url.PathEscape(exportName(file.Name, format)))
