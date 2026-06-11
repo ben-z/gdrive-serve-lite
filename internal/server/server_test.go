@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gdrive-serve-lite/internal/config"
 	"gdrive-serve-lite/internal/drive"
@@ -2265,6 +2267,81 @@ func TestAPIListUsesExactListCache(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("calls = %d, want 1", calls)
 	}
+}
+
+func TestAPIListPaginatesHugeFolder(t *testing.T) {
+	const totalFiles = 100_000
+	const pageSize = 1000
+	var driveCalls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		driveCalls++
+		q := req.URL.Query()
+		if q.Get("pageSize") != "1000" {
+			t.Fatalf("pageSize = %q", q.Get("pageSize"))
+		}
+		start := 0
+		if tok := q.Get("pageToken"); tok != "" {
+			var err error
+			if start, err = strconv.Atoi(tok); err != nil {
+				t.Fatalf("pageToken = %q", tok)
+			}
+		}
+		end := min(start+pageSize, totalFiles)
+		var sb strings.Builder
+		sb.WriteString(`{"files":[`)
+		for i := start; i < end; i++ {
+			if i > start {
+				sb.WriteString(",")
+			}
+			fmt.Fprintf(&sb, `{"id":"id-%06d","name":"clip-%06d.mp4","mimeType":"video/mp4","size":"1048576"}`, i, i)
+		}
+		sb.WriteString(`]`)
+		if end < totalFiles {
+			fmt.Fprintf(&sb, `,"nextPageToken":"%d"`, end)
+		}
+		sb.WriteString(`}`)
+		return jsonResponse(http.StatusOK, sb.String()), nil
+	})
+
+	began := time.Now()
+	next := "/api/list?folderId=huge-folder&type=files&pageSize=1000&limit=1000"
+	seen := make(map[string]struct{}, totalFiles)
+	var pages int
+	for next != "" {
+		req := httptest.NewRequest(http.MethodGet, next, nil)
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("page %d status = %d body=%s", pages, rec.Code, rec.Body.String()[:200])
+		}
+		var body ListResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Count != pageSize {
+			t.Fatalf("page %d Count = %d", pages, body.Count)
+		}
+		for _, f := range body.Files {
+			if _, dup := seen[f.ID]; dup {
+				t.Fatalf("duplicate file %q on page %d", f.ID, pages)
+			}
+			seen[f.ID] = struct{}{}
+		}
+		pages++
+		next = body.Next
+	}
+	elapsed := time.Since(began)
+	if pages != totalFiles/pageSize || len(seen) != totalFiles {
+		t.Fatalf("pages = %d, files = %d", pages, len(seen))
+	}
+	if driveCalls != pages {
+		t.Fatalf("driveCalls = %d, want one per page", driveCalls)
+	}
+	if elapsed > 15*time.Second {
+		t.Fatalf("pagination walk took %s", elapsed)
+	}
+	t.Logf("walked %d files in %d pages in %s (%.2fms/page)",
+		len(seen), pages, elapsed, float64(elapsed.Milliseconds())/float64(pages))
 }
 
 func BenchmarkAPIListSinglePage(b *testing.B) {
