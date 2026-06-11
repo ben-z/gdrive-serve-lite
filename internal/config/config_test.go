@@ -17,7 +17,7 @@ func TestLoadUsesEnvWhenRemoteOmitted(t *testing.T) {
 	t.Setenv("GDSL_ROOT_FOLDER_ID", "env-root")
 	t.Setenv("GDSL_ROOT_RESOURCE_KEY", "env-root-key")
 
-	cfg, err := Load(context.Background(), LoadOptions{})
+	cfg, err := Load(context.Background(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestLoadPrefersExplicitRemoteOverEnv(t *testing.T) {
 	t.Setenv("GDSL_ACCESS_TOKEN", "env-access")
 	path := writeFixture(t, "rclone.conf", fakePlainRcloneConfig)
 
-	cfg, err := Load(context.Background(), LoadOptions{Remote: "fake-drive", ConfigPath: path})
+	cfg, err := Load(context.Background(), "fake-drive", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestLoadExplicitEncryptedRemoteDoesNotFallBackToEnv(t *testing.T) {
 	t.Setenv("RCLONE_CONFIG_PASS", "")
 	path := writeFixture(t, "rclone.conf", fakeEncryptedRcloneConfig)
 
-	_, err := Load(context.Background(), LoadOptions{Remote: "fake-drive", ConfigPath: path})
+	_, err := Load(context.Background(), "fake-drive", path)
 	if !errors.Is(err, errConfigFileEncrypted) {
 		t.Fatalf("error = %v, want errConfigFileEncrypted", err)
 	}

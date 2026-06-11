@@ -8,17 +8,17 @@ import (
 )
 
 const (
-	GoogleAppsMIMEPrefix    = "application/vnd.google-apps."
-	ShortcutMIME            = "application/vnd.google-apps.shortcut"
-	DocumentMIME            = "application/vnd.google-apps.document"
-	SpreadsheetMIME         = "application/vnd.google-apps.spreadsheet"
-	PresentationMIME        = "application/vnd.google-apps.presentation"
-	DrawingMIME             = "application/vnd.google-apps.drawing"
-	AppsScriptMIME          = "application/vnd.google-apps.script"
-	GoogleVidsMIME          = "application/vnd.google-apps.vid"
-	OpenXMLDocumentMIME     = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-	OpenXMLSpreadsheetMIME  = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-	OpenXMLPresentationMIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	googleAppsMIMEPrefix    = "application/vnd.google-apps."
+	shortcutMIME            = "application/vnd.google-apps.shortcut"
+	documentMIME            = "application/vnd.google-apps.document"
+	spreadsheetMIME         = "application/vnd.google-apps.spreadsheet"
+	presentationMIME        = "application/vnd.google-apps.presentation"
+	drawingMIME             = "application/vnd.google-apps.drawing"
+	appsScriptMIME          = "application/vnd.google-apps.script"
+	googleVidsMIME          = "application/vnd.google-apps.vid"
+	openXMLDocumentMIME     = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	openXMLSpreadsheetMIME  = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	openXMLPresentationMIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 )
 
 var ErrUnsupportedExport = errors.New("unsupported export")
@@ -30,7 +30,7 @@ type ExportFormat struct {
 }
 
 var exportFormatsByName = map[string]ExportFormat{
-	"docx": {Format: "docx", MIMEType: OpenXMLDocumentMIME, Extension: "docx"},
+	"docx": {Format: "docx", MIMEType: openXMLDocumentMIME, Extension: "docx"},
 	"odt":  {Format: "odt", MIMEType: "application/vnd.oasis.opendocument.text", Extension: "odt"},
 	"rtf":  {Format: "rtf", MIMEType: "application/rtf", Extension: "rtf"},
 	"pdf":  {Format: "pdf", MIMEType: "application/pdf", Extension: "pdf"},
@@ -39,12 +39,12 @@ var exportFormatsByName = map[string]ExportFormat{
 	"epub": {Format: "epub", MIMEType: "application/epub+zip", Extension: "epub"},
 	"md":   {Format: "md", MIMEType: "text/markdown", Extension: "md"},
 
-	"xlsx": {Format: "xlsx", MIMEType: OpenXMLSpreadsheetMIME, Extension: "xlsx"},
+	"xlsx": {Format: "xlsx", MIMEType: openXMLSpreadsheetMIME, Extension: "xlsx"},
 	"ods":  {Format: "ods", MIMEType: "application/x-vnd.oasis.opendocument.spreadsheet", Extension: "ods"},
 	"csv":  {Format: "csv", MIMEType: "text/csv", Extension: "csv"},
 	"tsv":  {Format: "tsv", MIMEType: "text/tab-separated-values", Extension: "tsv"},
 
-	"pptx": {Format: "pptx", MIMEType: OpenXMLPresentationMIME, Extension: "pptx"},
+	"pptx": {Format: "pptx", MIMEType: openXMLPresentationMIME, Extension: "pptx"},
 	"odp":  {Format: "odp", MIMEType: "application/vnd.oasis.opendocument.presentation", Extension: "odp"},
 	"jpg":  {Format: "jpg", MIMEType: "image/jpeg", Extension: "jpg"},
 	"png":  {Format: "png", MIMEType: "image/png", Extension: "png"},
@@ -55,27 +55,27 @@ var exportFormatsByName = map[string]ExportFormat{
 }
 
 var defaultSourceExport = map[string]string{
-	DocumentMIME:     "docx",
-	SpreadsheetMIME:  "xlsx",
-	PresentationMIME: "pptx",
-	DrawingMIME:      "svg",
-	AppsScriptMIME:   "json",
-	GoogleVidsMIME:   "mp4",
+	documentMIME:     "docx",
+	spreadsheetMIME:  "xlsx",
+	presentationMIME: "pptx",
+	drawingMIME:      "svg",
+	appsScriptMIME:   "json",
+	googleVidsMIME:   "mp4",
 }
 
 var sourceExportFormats = map[string][]string{
-	DocumentMIME:     {"docx", "pdf", "odt", "rtf", "txt", "html", "epub", "md"},
-	SpreadsheetMIME:  {"xlsx", "pdf", "ods", "csv", "tsv", "html"},
-	PresentationMIME: {"pptx", "pdf", "odp", "txt", "jpg", "png", "svg"},
-	DrawingMIME:      {"svg", "pdf", "jpg", "png"},
-	AppsScriptMIME:   {"json"},
-	GoogleVidsMIME:   {"mp4"},
+	documentMIME:     {"docx", "pdf", "odt", "rtf", "txt", "html", "epub", "md"},
+	spreadsheetMIME:  {"xlsx", "pdf", "ods", "csv", "tsv", "html"},
+	presentationMIME: {"pptx", "pdf", "odp", "txt", "jpg", "png", "svg"},
+	drawingMIME:      {"svg", "pdf", "jpg", "png"},
+	appsScriptMIME:   {"json"},
+	googleVidsMIME:   {"mp4"},
 }
 
 var exportPriority = map[string]int{
-	OpenXMLDocumentMIME:     0,
-	OpenXMLSpreadsheetMIME:  1,
-	OpenXMLPresentationMIME: 2,
+	openXMLDocumentMIME:     0,
+	openXMLSpreadsheetMIME:  1,
+	openXMLPresentationMIME: 2,
 	"image/svg+xml":         3,
 	"application/pdf":       4,
 	"text/plain":            5,
@@ -153,9 +153,9 @@ func SupportsExportFormat(file File, format ExportFormat) bool {
 }
 
 func IsWorkspaceFile(file File) bool {
-	return strings.HasPrefix(file.MIMEType, GoogleAppsMIMEPrefix) &&
+	return strings.HasPrefix(file.MIMEType, googleAppsMIMEPrefix) &&
 		file.MIMEType != FolderMIME &&
-		file.MIMEType != ShortcutMIME
+		file.MIMEType != shortcutMIME
 }
 
 func annotateFileExports(file *File) {

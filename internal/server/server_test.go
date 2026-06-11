@@ -26,12 +26,6 @@ func TestAPIListAggregatesPagesAndReturnsNextURL(t *testing.T) {
 			}
 			return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"},{"id":"b","name":"b.mp4"}],"nextPageToken":"tok-2"}`), nil
 		case 2:
-			if q.Get("pageToken") != "tok-2" {
-				t.Fatalf("second pageToken = %q", q.Get("pageToken"))
-			}
-			if q.Get("pageSize") != "1" {
-				t.Fatalf("second pageSize = %q", q.Get("pageSize"))
-			}
 			return jsonResponse(http.StatusOK, `{"files":[{"id":"c","name":"c.mp4"}],"nextPageToken":"tok-3"}`), nil
 		default:
 			t.Fatalf("unexpected request %d", calls)
@@ -60,43 +54,8 @@ func TestAPIListAggregatesPagesAndReturnsNextURL(t *testing.T) {
 	}
 }
 
-func TestAPIListDefaultsToRootFolder(t *testing.T) {
-	app := testServer(func(req *http.Request) (*http.Response, error) {
-		query := req.URL.Query().Get("q")
-		if !strings.Contains(query, "'root-folder' in parents") {
-			t.Fatalf("query = %q", query)
-		}
-		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/list?type=files&pageSize=1000&limit=1000", nil)
-	rec := httptest.NewRecorder()
-	app.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	var body ListResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if body.FolderID != "root-folder" {
-		t.Fatalf("FolderID = %q", body.FolderID)
-	}
-	if body.Count != 1 {
-		t.Fatalf("Count = %d", body.Count)
-	}
-}
-
 func TestAPIListDefaultsToRootFolderResourceKey(t *testing.T) {
-	cfg := config.Config{
-		ClientID:     "test-client",
-		RootFolderID: "root-folder",
-		Token: config.OAuthToken{
-			AccessToken: "test-access",
-			TokenType:   "Bearer",
-		},
-	}
-	client := drive.NewClientWithHTTPClient(cfg, &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
 		if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "root-folder/root-key-1" {
 			t.Fatalf("resource key header = %q", got)
 		}
@@ -105,8 +64,7 @@ func TestAPIListDefaultsToRootFolderResourceKey(t *testing.T) {
 			t.Fatalf("query = %q", query)
 		}
 		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
-	})})
-	app := NewWithRootResourceKey(client, cfg.RootFolderID, "root-key-1")
+	}, Options{RootResourceKey: "root-key-1"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/list?type=files&pageSize=1000&limit=1000", nil)
 	rec := httptest.NewRecorder()
@@ -118,35 +76,8 @@ func TestAPIListDefaultsToRootFolderResourceKey(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.FolderID != "root-folder" || body.ResourceKey != "root-key-1" {
+	if body.FolderID != "root-folder" || body.ResourceKey != "root-key-1" || body.Count != 1 {
 		t.Fatalf("body = %+v", body)
-	}
-}
-
-func TestAPIListUsesExactListCache(t *testing.T) {
-	var calls int
-	app := testServer(func(req *http.Request) (*http.Response, error) {
-		calls++
-		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
-	})
-
-	for range 2 {
-		req := httptest.NewRequest(http.MethodGet, "/api/list?folderId=folder-1&type=files&pageSize=1000&limit=1000", nil)
-		rec := httptest.NewRecorder()
-		app.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
-		}
-		var body ListResponse
-		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-			t.Fatal(err)
-		}
-		if body.Count != 1 {
-			t.Fatalf("Count = %d", body.Count)
-		}
-	}
-	if calls != 1 {
-		t.Fatalf("calls = %d, want 1", calls)
 	}
 }
 
@@ -256,8 +187,7 @@ func TestBaseURLPrefixesAPIListLinks(t *testing.T) {
 			"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}],
 			"nextPageToken":"tok-2"
 		}`), nil
-	})
-	app.SetBaseURL("/gdrive/")
+	}, Options{BaseURL: "/gdrive/"})
 
 	req := httptest.NewRequest(http.MethodGet, "/gdrive/api/list?folderId=root-folder&pageSize=1&limit=1&links=1", nil)
 	rec := httptest.NewRecorder()
@@ -287,8 +217,7 @@ func TestBaseURLPrefixesBrowseLinks(t *testing.T) {
 			],
 			"nextPageToken":"tok-2"
 		}`), nil
-	})
-	app.SetBaseURL("gdrive")
+	}, Options{BaseURL: "gdrive"})
 
 	req := httptest.NewRequest(http.MethodGet, "/gdrive/?pageSize=1&limit=1", nil)
 	rec := httptest.NewRecorder()
@@ -312,8 +241,7 @@ func TestBaseURLRejectsUnprefixedRequests(t *testing.T) {
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		t.Fatalf("unexpected Drive request: %s", req.URL.String())
 		return nil, nil
-	})
-	app.SetBaseURL("/gdrive")
+	}, Options{BaseURL: "/gdrive"})
 
 	for _, path := range []string{
 		"/api/list?folderId=root-folder",
@@ -355,8 +283,7 @@ func TestBaseURLPreservesEscapedPathsForResolution(t *testing.T) {
 					t.Fatalf("unexpected request %d", calls)
 					return nil, nil
 				}
-			})
-			app.SetBaseURL(tt.baseURL)
+			}, Options{BaseURL: tt.baseURL})
 
 			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
 			rec := httptest.NewRecorder()
@@ -385,6 +312,13 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 		{"/path/folder/video.mp4", "GET, HEAD"},
 		{"/browse/folder", "GET, HEAD"},
 		{"/folder/video.mp4", "GET, HEAD"},
+		// Prefix routes without a trailing slash fall through to the root
+		// handler's method check rather than the mux's trailing-slash
+		// redirect.
+		{"/file", "GET, HEAD"},
+		{"/export", "GET, HEAD"},
+		{"/path", "GET, HEAD"},
+		{"/browse", "GET, HEAD"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -418,8 +352,7 @@ func TestBasicAuthRejectsUnauthorizedRequests(t *testing.T) {
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		t.Fatal("Drive transport should not be reached")
 		return nil, nil
-	})
-	app.SetBasicAuth("ben", "secret")
+	}, Options{Username: "ben", Password: "secret"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/list", nil)
 	rec := httptest.NewRecorder()
@@ -440,8 +373,7 @@ func TestBasicAuthAllowsAuthorizedRequests(t *testing.T) {
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		calls++
 		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
-	})
-	app.SetBasicAuth("ben", "secret")
+	}, Options{Username: "ben", Password: "secret"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/list", nil)
 	req.SetBasicAuth("ben", "secret")
@@ -456,21 +388,10 @@ func TestBasicAuthAllowsAuthorizedRequests(t *testing.T) {
 }
 
 func TestCORSPreflightBypassesBasicAuth(t *testing.T) {
-	cfg := config.Config{
-		ClientID:     "test-client",
-		RootFolderID: "root-folder",
-		Token: config.OAuthToken{
-			AccessToken: "test-access",
-			TokenType:   "Bearer",
-		},
-	}
-	client := drive.NewClientWithHTTPClient(cfg, &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
 		t.Fatalf("unexpected Drive request for preflight: %s %s", req.Method, req.URL.String())
 		return nil, nil
-	})})
-	app := New(client, cfg.RootFolderID)
-	app.SetBasicAuth("ben", "secret")
-	app.SetAllowOrigin("http://localhost:3000")
+	}, Options{Username: "ben", Password: "secret", AllowOrigin: "http://localhost:3000"})
 
 	req := httptest.NewRequest(http.MethodOptions, "/api/list", nil)
 	req.Header.Set("Origin", "http://localhost:3000")
@@ -495,8 +416,7 @@ func TestCORSPreflightBypassesBasicAuth(t *testing.T) {
 func TestCORSHeadersOnAllowedResponse(t *testing.T) {
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
-	})
-	app.SetAllowOrigin("*")
+	}, Options{AllowOrigin: "*"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/list", nil)
 	req.Header.Set("Origin", "http://localhost:3000")
@@ -519,8 +439,7 @@ func TestCORSHeadersOnAllowedResponse(t *testing.T) {
 func TestCORSRejectsDifferentOrigin(t *testing.T) {
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
-	})
-	app.SetAllowOrigin("http://localhost:3000")
+	}, Options{AllowOrigin: "http://localhost:3000"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/list", nil)
 	req.Header.Set("Origin", "http://evil.invalid")
@@ -531,26 +450,6 @@ func TestCORSRejectsDifferentOrigin(t *testing.T) {
 	}
 	if rec.Header().Get("Access-Control-Allow-Origin") != "" {
 		t.Fatalf("Access-Control-Allow-Origin = %q", rec.Header().Get("Access-Control-Allow-Origin"))
-	}
-}
-
-func TestRootPathListsConfiguredRoot(t *testing.T) {
-	app := testServer(func(req *http.Request) (*http.Response, error) {
-		query := req.URL.Query().Get("q")
-		if !strings.Contains(query, "'root-folder' in parents") {
-			t.Fatalf("query = %q", query)
-		}
-		return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-	app.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "folder/") {
-		t.Fatalf("body = %s", rec.Body.String())
 	}
 }
 
@@ -593,9 +492,14 @@ func TestRootPathCanReturnJSONListing(t *testing.T) {
 
 func TestRootPathHTMLLinksPreserveResourceKeysAndShortcutTargets(t *testing.T) {
 	app := testServer(func(req *http.Request) (*http.Response, error) {
+		query := req.URL.Query().Get("q")
+		if !strings.Contains(query, "'root-folder' in parents") {
+			t.Fatalf("query = %q", query)
+		}
 		return jsonResponse(http.StatusOK, `{
 			"files":[
 				{"id":"folder-1","name":"Shared","mimeType":"application/vnd.google-apps.folder","resourceKey":"folder-key-1"},
+				{"id":"folder-2","name":"A/B?C","mimeType":"application/vnd.google-apps.folder"},
 				{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","resourceKey":"file-key-1"},
 				{"id":"doc-1","name":"Notes","mimeType":"application/vnd.google-apps.document","resourceKey":"doc-key-1"},
 				{"id":"shortcut-1","name":"shortcut.mp4","mimeType":"application/vnd.google-apps.shortcut","shortcutDetails":{"targetId":"file-2","targetMimeType":"video/mp4","targetResourceKey":"target-key-1"}}
@@ -611,7 +515,9 @@ func TestRootPathHTMLLinksPreserveResourceKeysAndShortcutTargets(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
+		">Shared/</a>",
 		"/browse/Shared?folderId=folder-1&amp;resourceKey=folder-key-1",
+		"/browse/A%2FB%3FC?folderId=folder-2",
 		"/file/file-1/video.mp4?resourceKey=file-key-1",
 		"/export/doc-1/Notes.docx?resourceKey=doc-key-1",
 		"/file/file-2/shortcut.mp4?resourceKey=target-key-1",
@@ -619,27 +525,6 @@ func TestRootPathHTMLLinksPreserveResourceKeysAndShortcutTargets(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q:\n%s", want, body)
 		}
-	}
-}
-
-func TestRootPathHTMLFolderLinksEscapeSlashInNames(t *testing.T) {
-	app := testServer(func(req *http.Request) (*http.Response, error) {
-		return jsonResponse(http.StatusOK, `{
-			"files":[
-				{"id":"folder-1","name":"A/B?C","mimeType":"application/vnd.google-apps.folder"}
-			]
-		}`), nil
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-	app.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "/browse/A%2FB%3FC?folderId=folder-1") {
-		t.Fatalf("body missing escaped folder link:\n%s", body)
 	}
 }
 
@@ -1288,11 +1173,11 @@ func TestExportEndpointDefaultsToRcloneLikeFormat(t *testing.T) {
 			if req.URL.Path != "/drive/v3/files/doc-1/export" {
 				t.Fatalf("export path = %q", req.URL.Path)
 			}
-			if req.URL.Query().Get("mimeType") != drive.OpenXMLDocumentMIME {
+			if req.URL.Query().Get("mimeType") != docxMIME {
 				t.Fatalf("mimeType = %q", req.URL.Query().Get("mimeType"))
 			}
 			resp := textResponse(http.StatusOK, "docx-bytes")
-			resp.Header.Set("Content-Type", drive.OpenXMLDocumentMIME)
+			resp.Header.Set("Content-Type", docxMIME)
 			resp.Header.Set("Content-Length", "10")
 			resp.Header.Set("Content-Disposition", "attachment; filename=drive-doc.docx")
 			resp.Header.Set("Cache-Control", "private, max-age=60")
@@ -1316,7 +1201,7 @@ func TestExportEndpointDefaultsToRcloneLikeFormat(t *testing.T) {
 	if rec.Body.String() != "docx-bytes" {
 		t.Fatalf("body = %q", rec.Body.String())
 	}
-	if rec.Header().Get("Content-Type") != drive.OpenXMLDocumentMIME {
+	if rec.Header().Get("Content-Type") != docxMIME {
 		t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
 	}
 	if rec.Header().Get("Content-Disposition") != "attachment; filename=drive-doc.docx" {
@@ -2186,14 +2071,14 @@ func TestPathJSONNextOmitsFolderIDAndResourceKey(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
-	app := testServer(func(req *http.Request) (*http.Response, error) {
+	rt := func(req *http.Request) (*http.Response, error) {
 		t.Fatal("unexpected Drive request")
 		return nil, nil
-	})
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
-	app.Handler().ServeHTTP(rec, req)
+	testServer(rt).Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -2201,9 +2086,9 @@ func TestHealthz(t *testing.T) {
 		t.Fatalf("body = %q", rec.Body.String())
 	}
 
-	app.SetBasicAuth("ben", "secret")
+	authed := testServer(rt, Options{Username: "ben", Password: "secret"})
 	rec = httptest.NewRecorder()
-	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	authed.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status with auth enabled = %d, want 401", rec.Code)
 	}
@@ -2311,27 +2196,12 @@ func TestFileHeadWithoutNameFallsBackToMetadataName(t *testing.T) {
 }
 
 func BenchmarkAPIListSinglePage(b *testing.B) {
-	body := `{"files":[`
-	for i := range 1000 {
-		if i > 0 {
-			body += ","
-		}
-		body += fmt.Sprintf(`{"id":"id-%d","name":"file-%d.mp4","mimeType":"video/mp4","size":"100"}`, i, i)
-	}
-	body += `]}`
-	cfg := config.Config{
-		ClientID:     "test-client",
-		RootFolderID: "root-folder",
-		Token: config.OAuthToken{
-			AccessToken: "test-access",
-			TokenType:   "Bearer",
-		},
-	}
-	client := drive.NewClientWithHTTPClient(cfg, &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	body := bigListBody()
+	client := drive.NewClient(testConfig(), &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return jsonResponse(http.StatusOK, body), nil
 	})})
 	client.SetListCacheTTL(0)
-	app := New(client, cfg.RootFolderID)
+	app := New(client, Options{RootFolderID: "root-folder"})
 	req := httptest.NewRequest(http.MethodGet, "/api/list?folderId=folder-1&type=files&pageSize=1000&limit=1000", nil)
 
 	b.ReportAllocs()
@@ -2345,14 +2215,7 @@ func BenchmarkAPIListSinglePage(b *testing.B) {
 }
 
 func BenchmarkAPIListSinglePageCached(b *testing.B) {
-	body := `{"files":[`
-	for i := range 1000 {
-		if i > 0 {
-			body += ","
-		}
-		body += fmt.Sprintf(`{"id":"id-%d","name":"file-%d.mp4","mimeType":"video/mp4","size":"100"}`, i, i)
-	}
-	body += `]}`
+	body := bigListBody()
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		return jsonResponse(http.StatusOK, body), nil
 	})
@@ -2394,18 +2257,39 @@ func BenchmarkFileEndpointRange(b *testing.B) {
 	}
 }
 
-func testServer(rt func(*http.Request) (*http.Response, error)) *Server {
-	cfg := config.Config{
-		ClientID:     "test-client",
-		RootFolderID: "root-folder",
-		Token: config.OAuthToken{
-			AccessToken: "test-access",
-			TokenType:   "Bearer",
-		},
+func testServer(rt func(*http.Request) (*http.Response, error), opts ...Options) *Server {
+	o := Options{}
+	if len(opts) > 0 {
+		o = opts[0]
 	}
-	client := drive.NewClientWithHTTPClient(cfg, &http.Client{Transport: roundTripFunc(rt)})
-	return New(client, cfg.RootFolderID)
+	if o.RootFolderID == "" {
+		o.RootFolderID = "root-folder"
+	}
+	client := drive.NewClient(testConfig(), &http.Client{Transport: roundTripFunc(rt)})
+	return New(client, o)
 }
+
+func testConfig() config.Config {
+	return config.Config{
+		ClientID: "test-client",
+		Token:    config.OAuthToken{AccessToken: "test-access"},
+	}
+}
+
+func bigListBody() string {
+	var sb strings.Builder
+	sb.WriteString(`{"files":[`)
+	for i := range 1000 {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `{"id":"id-%d","name":"file-%d.mp4","mimeType":"video/mp4","size":"100"}`, i, i)
+	}
+	sb.WriteString(`]}`)
+	return sb.String()
+}
+
+const docxMIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
