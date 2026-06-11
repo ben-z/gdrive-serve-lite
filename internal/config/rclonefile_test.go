@@ -103,18 +103,15 @@ func TestEncryptedRcloneFileRejectsWrongPassword(t *testing.T) {
 	}
 }
 
-func TestRcloneConfigKeyUsesNFKCNormalization(t *testing.T) {
-	a, err := rcloneConfigKey("Å")
+func TestEncryptedRcloneFileAcceptsNFKCEquivalentPassword(t *testing.T) {
+	// Encrypt with U+212B ANGSTROM SIGN, decrypt with U+00C5 LATIN CAPITAL
+	// LETTER A WITH RING ABOVE: NFKC-equivalent forms of the same password.
+	path := writeFixture(t, "rclone.conf", encryptedRcloneFixture(t, []byte(fakePlainRcloneConfig), "\u212B"))
+	cfg, err := loadRcloneFile("fake-drive", path, "\u00C5")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := rcloneConfigKey("Å")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a != b {
-		t.Fatal("expected canonically compatible passwords to produce the same config key")
-	}
+	assertFakeConfig(t, cfg)
 }
 
 func writeFixture(t *testing.T, name, contents string) string {

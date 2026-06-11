@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -14,7 +15,7 @@ func TestLoadUsesEnvWhenRemoteOmitted(t *testing.T) {
 	t.Setenv("GDSL_TOKEN_EXPIRY", "")
 	t.Setenv("GDSL_DRIVE_ID", "")
 	t.Setenv("GDSL_ROOT_FOLDER_ID", "env-root")
-	t.Setenv("GDSL_ROOT_RESOURCE_KEY", "")
+	t.Setenv("GDSL_ROOT_RESOURCE_KEY", "env-root-key")
 
 	cfg, err := Load(context.Background(), LoadOptions{})
 	if err != nil {
@@ -23,8 +24,55 @@ func TestLoadUsesEnvWhenRemoteOmitted(t *testing.T) {
 	if cfg.Source != "env" {
 		t.Fatalf("Source = %q, want env", cfg.Source)
 	}
-	if cfg.ClientID != "env-client" || cfg.Token.AccessToken != "env-access" || cfg.RootFolderID != "env-root" {
+	if cfg.ClientID != "env-client" || cfg.Token.AccessToken != "env-access" ||
+		cfg.RootFolderID != "env-root" || cfg.RootResourceKey != "env-root-key" {
 		t.Fatalf("cfg = %+v", cfg)
+	}
+}
+
+func TestValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{"no tokens", Config{}, "missing access token or refresh token"},
+		{"refresh without client id", Config{Token: OAuthToken{RefreshToken: "r"}}, "client ID is missing"},
+		{"access token only", Config{Token: OAuthToken{AccessToken: "a"}}, ""},
+		{"refresh with client id", Config{ClientID: "c", Token: OAuthToken{RefreshToken: "r"}}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestEffectiveRootFolderID(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{"root folder wins", Config{RootFolderID: "folder-1", DriveID: "drive-1"}, "folder-1"},
+		{"drive id fallback", Config{DriveID: "drive-1"}, "drive-1"},
+		{"root default", Config{}, "root"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.EffectiveRootFolderID(); got != tt.want {
+				t.Fatalf("EffectiveRootFolderID() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -52,27 +100,5 @@ func TestLoadExplicitEncryptedRemoteDoesNotFallBackToEnv(t *testing.T) {
 	_, err := Load(context.Background(), LoadOptions{Remote: "fake-drive", ConfigPath: path})
 	if !errors.Is(err, errConfigFileEncrypted) {
 		t.Fatalf("error = %v, want errConfigFileEncrypted", err)
-	}
-}
-
-func TestLoadEnvReadsRootResourceKey(t *testing.T) {
-	t.Setenv("GDSL_CLIENT_ID", "")
-	t.Setenv("GDSL_CLIENT_SECRET", "")
-	t.Setenv("GDSL_ACCESS_TOKEN", "test-access")
-	t.Setenv("GDSL_REFRESH_TOKEN", "")
-	t.Setenv("GDSL_TOKEN_EXPIRY", "")
-	t.Setenv("GDSL_DRIVE_ID", "")
-	t.Setenv("GDSL_ROOT_FOLDER_ID", "root-folder")
-	t.Setenv("GDSL_ROOT_RESOURCE_KEY", "root-key-1")
-
-	cfg, ok := loadEnv()
-	if !ok {
-		t.Fatal("loadEnv() returned ok=false")
-	}
-	if cfg.RootFolderID != "root-folder" {
-		t.Fatalf("RootFolderID = %q", cfg.RootFolderID)
-	}
-	if cfg.RootResourceKey != "root-key-1" {
-		t.Fatalf("RootResourceKey = %q", cfg.RootResourceKey)
 	}
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -327,23 +328,46 @@ func TestBaseURLRejectsUnprefixedRequests(t *testing.T) {
 	}
 }
 
-func TestBasePathMiddlewarePreservesRawEscapedPath(t *testing.T) {
-	handler := basePathMiddleware("/gdrive", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/browse/a/b" {
-			t.Fatalf("Path = %q", r.URL.Path)
-		}
-		if got := escapedPath(r); got != "/browse/a%2Fb" {
-			t.Fatalf("escaped path = %q", got)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	req := httptest.NewRequest(http.MethodGet, "/gdrive/browse/a%2Fb", nil)
-	req.URL.Path = "/gdrive/browse/a/b"
-	req.URL.RawPath = "/gdrive/browse/a%2Fb"
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+func TestBaseURLPreservesEscapedPathsForResolution(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		target  string
+	}{
+		{"plain prefix", "/gdrive", "/gdrive/browse/a%2Fb"},
+		{"escapable prefix", "/my base", "/my%20base/browse/a%2Fb"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls int
+			app := testServer(func(req *http.Request) (*http.Response, error) {
+				calls++
+				switch calls {
+				case 1:
+					query := req.URL.Query().Get("q")
+					if !strings.Contains(query, "name = 'a/b'") {
+						t.Fatalf("resolve query = %q", query)
+					}
+					return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"a/b","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+				case 2:
+					return jsonResponse(http.StatusOK, `{"files":[]}`), nil
+				default:
+					t.Fatalf("unexpected request %d", calls)
+					return nil, nil
+				}
+			})
+			app.SetBaseURL(tt.baseURL)
+
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			rec := httptest.NewRecorder()
+			app.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			if calls != 2 {
+				t.Fatalf("calls = %d, want 2", calls)
+			}
+		})
 	}
 }
 
@@ -354,6 +378,8 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	}{
 		{"/api/list", "GET"},
 		{"/api/file?id=file-1", "GET"},
+		{"/api/resolve?path=/folder", "GET"},
+		{"/api/export-formats?id=doc-1", "GET"},
 		{"/file/file-1/video.mp4", "GET, HEAD"},
 		{"/export/doc-1/Notes", "GET, HEAD"},
 		{"/path/folder/video.mp4", "GET, HEAD"},
@@ -377,6 +403,9 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 			}
 			if rec.Header().Get("Allow") != tt.allow {
 				t.Fatalf("Allow = %q, want %q", rec.Header().Get("Allow"), tt.allow)
+			}
+			if rec.Body.Len() != 0 {
+				t.Fatalf("body = %q, want empty", rec.Body.String())
 			}
 			if calls != 0 {
 				t.Fatalf("calls = %d, want none", calls)
@@ -2004,6 +2033,279 @@ func TestPathEndpointHeadUsesResolvedMetadata(t *testing.T) {
 		t.Fatalf("Last-Modified = %q", rec.Header().Get("Last-Modified"))
 	}
 	if !strings.Contains(rec.Header().Get("Content-Disposition"), "video.mp4") {
+		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+}
+
+func TestWriteErrorStatusMapping(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		rt         func(req *http.Request) (*http.Response, error)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:   "path not found",
+			target: "/path/missing.mp4",
+			rt: func(req *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, `{"files":[]}`), nil
+			},
+			wantStatus: http.StatusNotFound,
+			wantBody:   "not found",
+		},
+		{
+			name:   "ambiguous path",
+			target: "/api/resolve?path=/dup",
+			rt: func(req *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"dup","mimeType":"application/vnd.google-apps.folder"},{"id":"b","name":"dup","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+			},
+			wantStatus: http.StatusConflict,
+			wantBody:   "ambiguous",
+		},
+		{
+			name:       "missing id",
+			target:     "/api/file",
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "id is required",
+		},
+		{
+			name:   "drive api status passthrough",
+			target: "/api/file?id=file-1",
+			rt: func(req *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusForbidden, `{"error":"rate"}`), nil
+			},
+			wantStatus: http.StatusForbidden,
+			wantBody:   "Drive API",
+		},
+		{
+			name:       "invalid list type",
+			target:     "/api/list?type=bogus",
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `invalid list type \"bogus\"`,
+		},
+		{
+			name:       "invalid item type",
+			target:     "/api/resolve?path=/folder&type=bogus",
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `invalid item type \"bogus\"`,
+		},
+		{
+			name:   "transport error",
+			target: "/api/file?id=file-1",
+			rt: func(req *http.Request) (*http.Response, error) {
+				return nil, errors.New("connection refused")
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   "connection refused",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := tt.rt
+			if rt == nil {
+				rt = func(req *http.Request) (*http.Response, error) {
+					t.Fatalf("unexpected Drive request: %s", req.URL)
+					return nil, nil
+				}
+			}
+			app := testServer(rt)
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			rec := httptest.NewRecorder()
+			app.Handler().ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
+				t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+			}
+			if !strings.Contains(rec.Body.String(), tt.wantBody) {
+				t.Fatalf("body = %q, want substring %q", rec.Body.String(), tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestBrowseJSONNextIncludesFolderResourceKey(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}],"nextPageToken":"tok-2"}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/browse?folderId=folder-1&resourceKey=folder-key-1&pageSize=1&limit=1", nil)
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body.Next, "folderId=folder-1") ||
+		!strings.Contains(body.Next, "resourceKey=folder-key-1") ||
+		!strings.Contains(body.Next, "pageToken=tok-2") {
+		t.Fatalf("Next = %q", body.Next)
+	}
+}
+
+func TestPathJSONNextOmitsFolderIDAndResourceKey(t *testing.T) {
+	var calls int
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"Shared","mimeType":"application/vnd.google-apps.folder","resourceKey":"folder-key-1"}]}`), nil
+		case 2:
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}],"nextPageToken":"tok-2"}`), nil
+		default:
+			t.Fatalf("unexpected request %d", calls)
+			return nil, nil
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/Shared?format=json&pageSize=1&limit=1", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.ResourceKey != "folder-key-1" {
+		t.Fatalf("ResourceKey = %q", body.ResourceKey)
+	}
+	if !strings.HasPrefix(body.Next, "/Shared?") || !strings.Contains(body.Next, "pageToken=tok-2") {
+		t.Fatalf("Next = %q", body.Next)
+	}
+	if strings.Contains(body.Next, "folderId") || strings.Contains(body.Next, "resourceKey") {
+		t.Fatalf("Next = %q, want no folderId or resourceKey", body.Next)
+	}
+}
+
+func TestHealthz(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		t.Fatal("unexpected Drive request")
+		return nil, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"ok":"true"`) {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+
+	app.SetBasicAuth("ben", "secret")
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status with auth enabled = %d, want 401", rec.Code)
+	}
+}
+
+func TestAPIResolveFolderDefaultsToFolderType(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		query := req.URL.Query().Get("q")
+		if !strings.Contains(query, "'root-folder' in parents") ||
+			!strings.Contains(query, "name = 'folder'") ||
+			!strings.Contains(query, "mimeType = '"+drive.FolderMIME+"'") {
+			t.Fatalf("query = %q", query)
+		}
+		return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"folder","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/resolve?path=/folder", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body ResolveResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.ID != "folder-1" || body.FolderID != "folder-1" || !body.IsDir || body.ParentID != "root-folder" {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestAPIResolveRootPath(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		t.Fatal("unexpected Drive request")
+		return nil, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/resolve?path=/", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body ResolveResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Path != "/" || body.ID != "root-folder" || body.FolderID != "root-folder" || !body.IsDir {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestFolderListingJSONTriggers(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+		accept string
+	}{
+		{"format query", "/?format=json", ""},
+		{"alt query", "/?alt=json", ""},
+		{"json flag", "/?json=1", ""},
+		{"accept json suffix", "/", "application/ld+json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := testServer(func(req *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, `{"files":[]}`), nil
+			})
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			if tt.accept != "" {
+				req.Header.Set("Accept", tt.accept)
+			}
+			rec := httptest.NewRecorder()
+			app.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
+				t.Fatalf("Content-Type = %q", rec.Header().Get("Content-Type"))
+			}
+		})
+	}
+}
+
+func TestFileHeadWithoutNameFallsBackToMetadataName(t *testing.T) {
+	app := testServer(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{"id":"doc-1","name":"Notes","mimeType":"application/vnd.google-apps.document"}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodHead, "/file/doc-1", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Content-Length") != "" {
+		t.Fatalf("Content-Length = %q, want empty for sizeless metadata", rec.Header().Get("Content-Length"))
+	}
+	if rec.Header().Get("Accept-Ranges") != "" {
+		t.Fatalf("Accept-Ranges = %q, want empty for workspace file", rec.Header().Get("Accept-Ranges"))
+	}
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), "Notes") {
 		t.Fatalf("Content-Disposition = %q", rec.Header().Get("Content-Disposition"))
 	}
 }

@@ -13,11 +13,42 @@ import (
 	"gdrive-serve-lite/internal/config"
 )
 
-func TestQuoteEscapesDriveQueryString(t *testing.T) {
-	got := quote(`quinn's paper\essay`)
-	want := `'quinn\'s paper\\essay'`
-	if got != want {
-		t.Fatalf("quote() = %q, want %q", got, want)
+func TestResolveItemPathEscapesDriveQueryStrings(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, `name = 'quinn\'s paper\\essay'`) {
+				t.Fatalf("query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"quinn's paper\\essay","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		}),
+	})
+
+	item, err := client.ResolveItemPath(context.Background(), `/quinn's paper\essay`, "root-folder", "folder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.File.ID != "folder-1" {
+		t.Fatalf("item = %+v", item)
+	}
+}
+
+func TestListChildrenClampsPageSizeSentToDrive(t *testing.T) {
+	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if got := req.URL.Query().Get("pageSize"); got != "1000" {
+				t.Fatalf("pageSize = %q, want clamped 1000", got)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
+		}),
+	})
+
+	if _, err := client.ListChildren(context.Background(), ListOptions{
+		FolderID: "folder-1",
+		PageSize: 5000,
+		Limit:    1000,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
