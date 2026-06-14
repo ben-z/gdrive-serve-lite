@@ -26,12 +26,12 @@ go build ./cmd/gdrive-serve-lite
 
 ```sh
 ./gdrive-serve-lite \
-  --remote drive-ro:/Videos/Clips \
+  --remote drive-ro:/Videos \
   --config ~/.config/rclone/rclone.conf \
   --metadata-cache-ttl 5m \
   --list-cache-ttl 30s \
   --drive-response-header-timeout 30s \
-  --user test-user \
+  --user viewer \
   --pass '<http-password>' \
   --allow-origin http://localhost:3000 \
   --baseurl /gdrive \
