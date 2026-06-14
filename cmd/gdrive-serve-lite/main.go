@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"log"
@@ -38,10 +39,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cfg, err := config.Load(ctx, config.LoadOptions{
-		Remote:     remoteName,
-		ConfigPath: *configPath,
-	})
+	cfg, err := config.Load(ctx, remoteName, *configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
@@ -58,59 +56,45 @@ func main() {
 		log.Fatalf("invalid config: %v", err)
 	}
 
-	client := drive.NewClientWithHTTPClient(cfg, drive.NewHTTPClient(*driveResponseHeaderTimeout))
+	client := drive.NewClient(cfg, drive.NewHTTPClient(*driveResponseHeaderTimeout))
 	client.SetMetadataCacheTTL(*metadataCacheTTL)
 	client.SetListCacheTTL(*listCacheTTL)
-	effectiveRootID := cfg.EffectiveRootFolderID()
-	effectiveRootResourceKey := cfg.RootResourceKey
-	if *rootFolderID == "" {
-		selectedRootPath := *rootPath
-		if selectedRootPath == "" {
-			selectedRootPath = remoteRootPath
+
+	rootID, rootKey := cfg.EffectiveRootFolderID(), cfg.RootResourceKey
+	if p := cmp.Or(*rootPath, remoteRootPath); *rootFolderID == "" && p != "" && p != "/" {
+		item, err := client.ResolveItemPath(ctx, p, rootID, rootKey, "folder")
+		if err != nil {
+			log.Fatalf("resolve root path %q: %v", p, err)
 		}
-		if selectedRootPath != "" && selectedRootPath != "/" {
-			resolvedRoot, err := client.ResolveItemPathWithResourceKey(ctx, selectedRootPath, effectiveRootID, effectiveRootResourceKey, "folder")
-			if err != nil {
-				log.Fatalf("resolve root path %q: %v", selectedRootPath, err)
-			}
-			effectiveRootID, effectiveRootResourceKey = drive.ReadableFileIDAndResourceKey(resolvedRoot.File)
-		}
+		rootID, rootKey = item.File.TargetIDAndKey()
 	}
-	app := server.NewWithRootResourceKey(client, effectiveRootID, effectiveRootResourceKey)
-	app.SetBasicAuth(*httpUser, *httpPass)
-	app.SetAllowOrigin(*allowOrigin)
-	app.SetBaseURL(*baseURL)
+
+	app := server.New(client, server.Options{
+		RootFolderID:    rootID,
+		RootResourceKey: rootKey,
+		Username:        *httpUser,
+		Password:        *httpPass,
+		AllowOrigin:     *allowOrigin,
+		BaseURL:         *baseURL,
+	})
 	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           app.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("gdrive-serve-lite listening on http://%s (config=%s root=%s metadataCacheTTL=%s listCacheTTL=%s driveResponseHeaderTimeout=%s)", *addr, cfg.Source, effectiveRootID, metadataCacheTTL.String(), listCacheTTL.String(), driveResponseHeaderTimeout.String())
+	log.Printf("gdrive-serve-lite listening on http://%s (config=%s root=%s metadataCacheTTL=%s listCacheTTL=%s driveResponseHeaderTimeout=%s)", *addr, cfg.Source, rootID, metadataCacheTTL, listCacheTTL, driveResponseHeaderTimeout)
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }
 
-func splitRemotePath(remote string) (string, string) {
-	remote = strings.TrimSpace(remote)
-	if remote == "" {
-		return "", ""
+// splitRemotePath splits an rclone-style "remote:path" into the remote name
+// and a cleaned, slash-prefixed root path.
+func splitRemotePath(remote string) (name, root string) {
+	name, root, ok := strings.Cut(strings.TrimSpace(remote), ":")
+	if root = strings.TrimSpace(root); !ok || root == "" {
+		return name, ""
 	}
-	name, root, ok := strings.Cut(remote, ":")
-	if !ok {
-		return remote, ""
-	}
-	return name, cleanRootPath(root)
-}
-
-func cleanRootPath(root string) string {
-	root = strings.TrimSpace(root)
-	if root == "" {
-		return ""
-	}
-	if !strings.HasPrefix(root, "/") {
-		root = "/" + root
-	}
-	return path.Clean(root)
+	return name, path.Clean("/" + root)
 }

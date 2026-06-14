@@ -159,11 +159,10 @@ func rcloneConfigKey(password string) ([32]byte, error) {
 	if !utf8.ValidString(password) {
 		return [32]byte{}, errors.New("password contains invalid utf8 characters")
 	}
-	trimmed := strings.TrimSpace(password)
-	password = norm.NFKC.String(password)
-	if len(password) == 0 || len(trimmed) == 0 {
+	if strings.TrimSpace(password) == "" {
 		return [32]byte{}, errors.New("no characters in password")
 	}
+	password = norm.NFKC.String(password)
 	return sha256.Sum256([]byte("[" + password + "][rclone-config]")), nil
 }
 
