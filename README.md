@@ -1,20 +1,20 @@
 # gdrive-serve-lite
 
-`gdrive-serve-lite` is a small read-only HTTP server for Google Drive. It is meant to cover the useful parts of `rclone serve http` while staying optimized for very large Drive folders.
+`gdrive-serve-lite` is a small read-only HTTP server for Google Drive. It lists and streams large Drive folders directly through the Drive API without rclone's VFS layer.
 
-The first version is intentionally narrow:
+## Features
 
 - paginated Drive-native directory listing
-- folder and file path resolution as a convenience
-- file download/streaming by Drive file ID
-- optional file download/streaming by Drive path
+- folder and file path resolution
+- file download/streaming by Drive file ID or path
 - Google Workspace document export
 - HTTP `Range` forwarding for media seeking
-- optional reuse of an rclone remote's OAuth config
+- optional rclone OAuth config reuse
+- optional Basic Auth, CORS, and reverse-proxy path prefix
 
 ## Why
 
-`rclone serve http` uses rclone's VFS abstraction. That is useful and general, but huge Google Drive folders can make path listing expensive before the server can return a small page. Google Drive's native `files.list` endpoint is already paginated and can filter by parent folder ID, MIME type, page token, and selected fields. This project exposes that narrower model directly.
+`rclone serve http` is general-purpose. For huge Google Drive folders, that can make a small listing slow. This project maps directly to Drive's paginated `files.list` API and keeps the HTTP surface narrow.
 
 ## Build
 
@@ -25,17 +25,7 @@ go build ./cmd/gdrive-serve-lite
 ## Run with an rclone remote
 
 ```sh
-./gdrive-serve-lite \
-  --remote drive-ro:/Videos \
-  --config ~/.config/rclone/rclone.conf \
-  --metadata-cache-ttl 5m \
-  --list-cache-ttl 30s \
-  --drive-response-header-timeout 30s \
-  --user viewer \
-  --pass '<http-password>' \
-  --allow-origin http://localhost:3000 \
-  --baseurl /gdrive \
-  --addr 127.0.0.1:8765
+./gdrive-serve-lite --remote drive-ro:/Videos --addr 127.0.0.1:8765
 ```
 
 The `--config` flag is optional. If omitted, the server checks `RCLONE_CONFIG`, then the usual rclone config locations. When `--remote` is provided, that explicit rclone remote is used even if `GDSL_*` environment variables are also present. Environment auth is used when no remote is requested.
