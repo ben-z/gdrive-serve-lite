@@ -7,13 +7,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 )
 
 type OAuthToken struct {
 	AccessToken  string    `json:"access_token"`
-	TokenType    string    `json:"token_type"`
 	RefreshToken string    `json:"refresh_token"`
 	Expiry       time.Time `json:"expiry"`
 }
@@ -28,24 +26,13 @@ type Config struct {
 	Source          string
 }
 
-type LoadOptions struct {
-	Remote     string
-	ConfigPath string
-}
-
-func Load(ctx context.Context, opts LoadOptions) (Config, error) {
-	remote := strings.TrimSuffix(opts.Remote, ":")
-	if remote != "" {
-		return loadRcloneConfig(ctx, remote, opts.ConfigPath)
-	}
-	if cfg, ok := loadEnv(); ok {
-		return cfg, nil
-	}
-	return Config{}, errors.New("no auth config found: set GDSL_* env vars or pass --remote")
-}
-
-func loadRcloneConfig(ctx context.Context, remote string, configPath string) (Config, error) {
+// Load reads auth config from the named rclone remote, or from GDSL_* env
+// vars when no remote is given.
+func Load(ctx context.Context, remote, configPath string) (Config, error) {
 	if remote == "" {
+		if cfg, ok := loadEnv(); ok {
+			return cfg, nil
+		}
 		return Config{}, errors.New("no auth config found: set GDSL_* env vars or pass --remote")
 	}
 
@@ -102,7 +89,6 @@ func loadEnv() (Config, bool) {
 		ClientSecret: os.Getenv("GDSL_CLIENT_SECRET"),
 		Token: OAuthToken{
 			AccessToken:  accessToken,
-			TokenType:    "Bearer",
 			RefreshToken: refreshToken,
 			Expiry:       expiry,
 		},
@@ -114,10 +100,9 @@ func loadEnv() (Config, bool) {
 }
 
 func loadRcloneDump(ctx context.Context, remote string) (Config, error) {
-	cmd := exec.CommandContext(ctx, "rclone", "config", "dump")
-	out, err := cmd.Output()
+	out, err := exec.CommandContext(ctx, "rclone", "config", "dump").Output()
 	if err != nil {
-		return Config{}, errors.New("rclone config dump failed; if the config is encrypted, set RCLONE_CONFIG_PASS or use GDSL_* env vars")
+		return Config{}, fmt.Errorf("rclone config dump: %w; if the config is encrypted, set RCLONE_CONFIG_PASS or use GDSL_* env vars", err)
 	}
 
 	var dump map[string]map[string]string

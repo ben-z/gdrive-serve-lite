@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,19 +18,21 @@ import (
 
 const FolderMIME = "application/vnd.google-apps.folder"
 
-const DefaultMetadataCacheTTL = 5 * time.Minute
-const DefaultListCacheTTL = 30 * time.Second
+const (
+	DefaultMetadataCacheTTL = 5 * time.Minute
+	DefaultListCacheTTL     = 30 * time.Second
+)
 
-var mediaRequestHeaders = []string{
-	"Range",
-	"If-Match",
-	"If-None-Match",
-	"If-Modified-Since",
-	"If-Unmodified-Since",
-	"If-Range",
-}
+// fileFields is the Drive metadata field set requested by every read in this
+// package, so all routes see the same file shape.
+const fileFields = "id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,exportLinks,shortcutDetails"
 
 var ErrNotFound = errors.New("not found")
+
+// BadRequestError reports an invalid caller-supplied argument.
+type BadRequestError struct{ msg string }
+
+func (e *BadRequestError) Error() string { return e.msg }
 
 type AmbiguousPathError struct {
 	Segment string
@@ -39,34 +42,6 @@ type AmbiguousPathError struct {
 
 func (e *AmbiguousPathError) Error() string {
 	return fmt.Sprintf("path segment %q is ambiguous under parent %q (%d matches)", e.Segment, e.Parent, e.Count)
-}
-
-type Client struct {
-	cfg              config.Config
-	token            config.OAuthToken
-	httpClient       *http.Client
-	mu               sync.Mutex
-	metadataCacheTTL time.Duration
-	listCacheTTL     time.Duration
-	cacheMu          sync.RWMutex
-	fileCache        map[string]cachedFile
-	lookupCache      map[string]cachedFiles
-	listCache        map[string]cachedList
-}
-
-type cachedFile struct {
-	file      File
-	expiresAt time.Time
-}
-
-type cachedFiles struct {
-	files     []File
-	expiresAt time.Time
-}
-
-type cachedList struct {
-	list      FileList
-	expiresAt time.Time
 }
 
 type APIError struct {
@@ -105,6 +80,30 @@ type ShortcutDetails struct {
 	TargetResourceKey string `json:"targetResourceKey,omitempty"`
 }
 
+// EffectiveMIMEType returns the MIME type the file acts as, following
+// shortcut targets.
+func (f File) EffectiveMIMEType() string {
+	if f.ShortcutDetails != nil && f.ShortcutDetails.TargetMIMEType != "" {
+		return f.ShortcutDetails.TargetMIMEType
+	}
+	return f.MIMEType
+}
+
+// IsFolder reports whether the file behaves as a folder; shortcuts to
+// folders count as folders.
+func (f File) IsFolder() bool {
+	return f.EffectiveMIMEType() == FolderMIME
+}
+
+// TargetIDAndKey returns the file ID and resource key to use when reading
+// the file, following shortcut targets.
+func (f File) TargetIDAndKey() (id, resourceKey string) {
+	if f.ShortcutDetails != nil && f.ShortcutDetails.TargetID != "" {
+		return f.ShortcutDetails.TargetID, f.ShortcutDetails.TargetResourceKey
+	}
+	return f.ID, f.ResourceKey
+}
+
 type ResolvedItem struct {
 	Path     string `json:"path"`
 	ParentID string `json:"parentId,omitempty"`
@@ -127,26 +126,35 @@ type ListOptions struct {
 	Type        string
 }
 
-func NewClient(cfg config.Config) *Client {
-	return NewClientWithHTTPClient(cfg, NewHTTPClient(0))
+type Client struct {
+	clientID     string
+	clientSecret string
+	driveID      string
+	httpClient   *http.Client
+
+	mu    sync.Mutex
+	token config.OAuthToken
+
+	files   *ttlCache[File]
+	lookups *ttlCache[[]File]
+	lists   *ttlCache[FileList]
 }
 
-func NewClientWithHTTPClient(cfg config.Config, httpClient *http.Client) *Client {
-	if httpClient == nil {
-		httpClient = NewHTTPClient(0)
-	}
+func NewClient(cfg config.Config, httpClient *http.Client) *Client {
 	return &Client{
-		cfg:              cfg,
-		token:            cfg.Token,
-		httpClient:       httpClient,
-		metadataCacheTTL: DefaultMetadataCacheTTL,
-		listCacheTTL:     DefaultListCacheTTL,
-		fileCache:        map[string]cachedFile{},
-		lookupCache:      map[string]cachedFiles{},
-		listCache:        map[string]cachedList{},
+		clientID:     cfg.ClientID,
+		clientSecret: cfg.ClientSecret,
+		driveID:      cfg.DriveID,
+		httpClient:   httpClient,
+		token:        cfg.Token,
+		files:        newTTLCache(DefaultMetadataCacheTTL, cloneFile),
+		lookups:      newTTLCache(DefaultMetadataCacheTTL, cloneFiles),
+		lists:        newTTLCache(DefaultListCacheTTL, cloneFileList),
 	}
 }
 
+// NewHTTPClient returns an http.Client that passes Drive responses through
+// raw: no transparent decompression, with a bound on response header waits.
 func NewHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = responseHeaderTimeout
@@ -154,47 +162,40 @@ func NewHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
 	return &http.Client{Transport: transport}
 }
 
+// SetMetadataCacheTTL sets the TTL for file metadata and path-segment
+// lookups and drops both caches; zero or less disables them.
 func (c *Client) SetMetadataCacheTTL(ttl time.Duration) {
-	c.cacheMu.Lock()
-	defer c.cacheMu.Unlock()
-	c.metadataCacheTTL = ttl
-	c.fileCache = map[string]cachedFile{}
-	c.lookupCache = map[string]cachedFiles{}
+	c.files.reset(ttl)
+	c.lookups.reset(ttl)
 }
 
-func (c *Client) ClearMetadataCache() {
-	c.cacheMu.Lock()
-	defer c.cacheMu.Unlock()
-	c.fileCache = map[string]cachedFile{}
-	c.lookupCache = map[string]cachedFiles{}
-}
-
+// SetListCacheTTL sets the TTL for exact-query list responses and drops the
+// cache; zero or less disables it.
 func (c *Client) SetListCacheTTL(ttl time.Duration) {
-	c.cacheMu.Lock()
-	defer c.cacheMu.Unlock()
-	c.listCacheTTL = ttl
-	c.listCache = map[string]cachedList{}
-}
-
-func (c *Client) ClearListCache() {
-	c.cacheMu.Lock()
-	defer c.cacheMu.Unlock()
-	c.listCache = map[string]cachedList{}
+	c.lists.reset(ttl)
 }
 
 func (c *Client) ListChildren(ctx context.Context, opts ListOptions) (*FileList, error) {
 	if opts.FolderID == "" {
 		return nil, errors.New("folder ID is required")
 	}
-	pageSize := normalizePageSize(opts.PageSize)
-	limit := normalizeLimit(opts.Limit, pageSize)
 	listType, err := normalizeListType(opts.Type)
 	if err != nil {
 		return nil, err
 	}
 	opts.Type = listType
-	cacheKey := listCacheKey(opts, pageSize, limit)
-	if cached, ok := c.cachedList(cacheKey); ok {
+	pageSize := normalizePageSize(opts.PageSize)
+	limit := normalizeLimit(opts.Limit, pageSize)
+	cacheKey := strings.Join([]string{
+		opts.FolderID,
+		opts.ResourceKey,
+		opts.Type,
+		opts.PageToken,
+		opts.OrderBy,
+		strconv.Itoa(pageSize),
+		strconv.Itoa(limit),
+	}, "\x00")
+	if cached, ok := c.lists.get(cacheKey); ok {
 		return &cached, nil
 	}
 
@@ -211,12 +212,7 @@ func (c *Client) ListChildren(ctx context.Context, opts ListOptions) (*FileList,
 			}
 			seenTokens[nextToken] = struct{}{}
 		}
-		remaining := limit - len(combined.Files)
-		thisPageSize := pageSize
-		if remaining < thisPageSize {
-			thisPageSize = remaining
-		}
-		page, err := c.listChildrenPage(ctx, opts, nextToken, thisPageSize)
+		page, err := c.listChildrenPage(ctx, opts, nextToken, min(pageSize, limit-len(combined.Files)))
 		if err != nil {
 			return nil, err
 		}
@@ -228,26 +224,15 @@ func (c *Client) ListChildren(ctx context.Context, opts ListOptions) (*FileList,
 		}
 		nextToken = page.NextPageToken
 	}
-	c.putCachedList(cacheKey, combined)
+	c.lists.put(cacheKey, combined)
 	return &combined, nil
 }
 
 func (c *Client) listChildrenPage(ctx context.Context, opts ListOptions, pageToken string, pageSize int) (*FileList, error) {
-	q := "trashed=false and " + quote(opts.FolderID) + " in parents"
-	switch opts.Type {
-	case "all":
-	case "files":
-		q += " and " + nonFolderLikeQuery()
-	case "folders":
-		q += " and " + folderLikeQuery()
-	default:
-		return nil, fmt.Errorf("invalid list type %q", opts.Type)
-	}
-
 	values := c.baseListValues()
-	values.Set("q", q)
-	values.Set("fields", "nextPageToken,incompleteSearch,files(id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,exportLinks,shortcutDetails)")
-	values.Set("pageSize", fmt.Sprintf("%d", pageSize))
+	values.Set("q", "trashed=false and "+quote(opts.FolderID)+" in parents"+typeFilter(opts.Type))
+	values.Set("fields", "nextPageToken,incompleteSearch,files("+fileFields+")")
+	values.Set("pageSize", strconv.Itoa(pageSize))
 	if pageToken != "" {
 		values.Set("pageToken", pageToken)
 	}
@@ -256,53 +241,22 @@ func (c *Client) listChildrenPage(ctx context.Context, opts ListOptions, pageTok
 	}
 
 	var out FileList
-	if err := c.getJSONWithResourceKey(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), opts.FolderID, opts.ResourceKey, &out); err != nil {
+	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), opts.FolderID, opts.ResourceKey, &out); err != nil {
 		return nil, err
 	}
 	annotateListExports(&out)
 	return &out, nil
 }
 
-func (c *Client) ResolvePath(ctx context.Context, p string, rootFolderID string) (string, error) {
-	return c.ResolvePathWithResourceKey(ctx, p, rootFolderID, "", "folder")
-}
-
-func (c *Client) ResolvePathWithResourceKey(ctx context.Context, p string, rootFolderID string, rootResourceKey string, itemType string) (string, error) {
-	item, err := c.ResolveItemPathWithResourceKey(ctx, p, rootFolderID, rootResourceKey, itemType)
-	if err != nil {
-		return "", err
-	}
-	id, _ := ReadableFileIDAndResourceKey(item.File)
-	return id, nil
-}
-
-func (c *Client) ResolveItemPath(ctx context.Context, p string, rootFolderID string, itemType string) (*ResolvedItem, error) {
-	return c.ResolveItemPathWithResourceKey(ctx, p, rootFolderID, "", itemType)
-}
-
-func (c *Client) ResolveItemPathWithResourceKey(ctx context.Context, p string, rootFolderID string, rootResourceKey string, itemType string) (*ResolvedItem, error) {
+// ResolveItemPath resolves a slash-separated path of URL-escaped segments,
+// one Drive name lookup per segment, starting at the given root folder.
+func (c *Client) ResolveItemPath(ctx context.Context, p, rootFolderID, rootResourceKey, itemType string) (*ResolvedItem, error) {
 	itemType, err := normalizeItemType(itemType)
 	if err != nil {
 		return nil, err
 	}
-	p = strings.TrimSpace(p)
-	if p == "" || p == "/" {
-		if itemType == "file" {
-			return nil, fmt.Errorf("%w: file at root path", ErrNotFound)
-		}
-		return &ResolvedItem{
-			Path: "/",
-			File: File{
-				ID:          rootFolderID,
-				Name:        "/",
-				MIMEType:    FolderMIME,
-				ResourceKey: rootResourceKey,
-			},
-		}, nil
-	}
-	parts := strings.Split(strings.Trim(p, "/"), "/")
-	parent := rootFolderID
-	parentResourceKey := rootResourceKey
+	parts := strings.Split(strings.Trim(strings.TrimSpace(p), "/"), "/")
+	parent, parentResourceKey := rootFolderID, rootResourceKey
 	resolvedParent := ""
 	cleanParts := make([]string, 0, len(parts))
 	var resolved File
@@ -325,11 +279,15 @@ func (c *Client) ResolveItemPathWithResourceKey(ctx context.Context, p string, r
 		}
 		switch len(matches) {
 		case 0:
-			return nil, fmt.Errorf("%w: %s %q under %q", ErrNotFound, typeLabel(leafType), segment, parent)
+			label := leafType
+			if label == "any" {
+				label = "item"
+			}
+			return nil, fmt.Errorf("%w: %s %q under %q", ErrNotFound, label, segment, parent)
 		case 1:
 			resolved = matches[0]
 			resolvedParent = parent
-			parent, parentResourceKey = ReadableFileIDAndResourceKey(matches[0])
+			parent, parentResourceKey = matches[0].TargetIDAndKey()
 		default:
 			return nil, &AmbiguousPathError{Segment: segment, Parent: parent, Count: len(matches)}
 		}
@@ -355,51 +313,47 @@ func (c *Client) ResolveItemPathWithResourceKey(ctx context.Context, p string, r
 	}, nil
 }
 
-func (c *Client) GetFile(ctx context.Context, id string) (*File, error) {
-	return c.GetFileWithResourceKey(ctx, id, "")
-}
-
-func (c *Client) GetFileWithResourceKey(ctx context.Context, id string, resourceKey string) (*File, error) {
+func (c *Client) GetFile(ctx context.Context, id, resourceKey string) (*File, error) {
 	if id == "" {
 		return nil, errors.New("file ID is required")
 	}
-	if cached, ok := c.cachedFile(fileCacheKey(id, resourceKey)); ok {
+	cacheKey := id + "\x00" + resourceKey
+	if cached, ok := c.files.get(cacheKey); ok {
 		return &cached, nil
 	}
 	values := c.baseGetValues()
-	values.Set("fields", "id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,exportLinks,shortcutDetails")
+	values.Set("fields", fileFields)
 	var out File
-	err := c.getJSONWithResourceKey(ctx, "https://www.googleapis.com/drive/v3/files/"+url.PathEscape(id)+"?"+values.Encode(), id, resourceKey, &out)
-	if err != nil {
+	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files/"+url.PathEscape(id)+"?"+values.Encode(), id, resourceKey, &out); err != nil {
 		return nil, err
 	}
 	annotateFileExports(&out)
-	c.putCachedFile(fileCacheKey(id, resourceKey), out)
+	if out.ID != "" {
+		c.files.put(cacheKey, out)
+	}
 	return &out, nil
 }
 
-func (c *Client) Download(ctx context.Context, method string, id string, rangeHeader string) (*http.Response, error) {
-	return c.DownloadWithResourceKey(ctx, method, id, rangeHeader, "")
+// mediaRequestHeaders are the caller headers forwarded to Drive media
+// reads, so range and conditional requests stay single upstream requests.
+var mediaRequestHeaders = []string{
+	"Range",
+	"If-Match",
+	"If-None-Match",
+	"If-Modified-Since",
+	"If-Unmodified-Since",
+	"If-Range",
 }
 
-func (c *Client) DownloadWithResourceKey(ctx context.Context, method string, id string, rangeHeader string, resourceKey string) (*http.Response, error) {
-	headers := http.Header{}
-	if rangeHeader != "" {
-		headers.Set("Range", rangeHeader)
-	}
-	return c.DownloadWithResourceKeyAndHeaders(ctx, method, id, headers, resourceKey)
-}
-
-func (c *Client) DownloadWithResourceKeyAndHeaders(ctx context.Context, method string, id string, headers http.Header, resourceKey string) (*http.Response, error) {
+// Download streams file content via alt=media, forwarding the
+// media-relevant request headers and the Drive response as-is.
+func (c *Client) Download(ctx context.Context, id string, headers http.Header, resourceKey string) (*http.Response, error) {
 	if id == "" {
 		return nil, errors.New("file ID is required")
 	}
-	if method == "" {
-		method = http.MethodGet
-	}
 	values := c.baseGetValues()
 	values.Set("alt", "media")
-	req, err := http.NewRequestWithContext(ctx, method, "https://www.googleapis.com/drive/v3/files/"+url.PathEscape(id)+"?"+values.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/drive/v3/files/"+url.PathEscape(id)+"?"+values.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -408,11 +362,9 @@ func (c *Client) DownloadWithResourceKeyAndHeaders(ctx context.Context, method s
 	return c.doRaw(req)
 }
 
-func (c *Client) Export(ctx context.Context, id string, mimeType string) (*http.Response, error) {
-	return c.ExportWithResourceKey(ctx, id, mimeType, "")
-}
-
-func (c *Client) ExportWithResourceKey(ctx context.Context, id string, mimeType string, resourceKey string) (*http.Response, error) {
+// Export streams a Google Workspace file converted to the given MIME type,
+// returning the Drive response as-is.
+func (c *Client) Export(ctx context.Context, id, mimeType, resourceKey string) (*http.Response, error) {
 	if id == "" {
 		return nil, errors.New("file ID is required")
 	}
@@ -429,35 +381,23 @@ func (c *Client) ExportWithResourceKey(ctx context.Context, id string, mimeType 
 	return c.doRaw(req)
 }
 
-func (c *Client) findItemsByName(ctx context.Context, parentID, parentResourceKey, name string, itemType string) ([]File, error) {
-	itemType, err := normalizeItemType(itemType)
-	if err != nil {
-		return nil, err
-	}
-	cacheKey := lookupCacheKey(parentID, parentResourceKey, name, itemType)
-	if cached, ok := c.cachedLookup(cacheKey); ok {
+func (c *Client) findItemsByName(ctx context.Context, parentID, parentResourceKey, name, itemType string) ([]File, error) {
+	cacheKey := parentID + "\x00" + parentResourceKey + "\x00" + itemType + "\x00" + name
+	if cached, ok := c.lookups.get(cacheKey); ok {
 		return cached, nil
 	}
-	q := "trashed=false and " + quote(parentID) + " in parents and name = " + quote(name)
-	switch itemType {
-	case "any":
-	case "file":
-		q += " and " + nonFolderLikeQuery()
-	case "folder":
-		q += " and " + folderLikeQuery()
-	}
 	values := c.baseListValues()
-	values.Set("q", q)
-	values.Set("fields", "files(id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,exportLinks,shortcutDetails)")
+	values.Set("q", "trashed=false and "+quote(parentID)+" in parents and name = "+quote(name)+typeFilter(itemType))
+	values.Set("fields", "files("+fileFields+")")
 	values.Set("pageSize", "2")
 	var out FileList
-	if err := c.getJSONWithResourceKey(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), parentID, parentResourceKey, &out); err != nil {
+	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), parentID, parentResourceKey, &out); err != nil {
 		return nil, err
 	}
 	annotateListExports(&out)
 	files := filterResolvedItems(out.Files, itemType)
 	if len(files) == 1 {
-		c.putCachedLookup(cacheKey, files)
+		c.lookups.put(cacheKey, files)
 	}
 	return files, nil
 }
@@ -467,9 +407,9 @@ func (c *Client) baseListValues() url.Values {
 	values.Set("supportsAllDrives", "true")
 	values.Set("includeItemsFromAllDrives", "true")
 	values.Set("spaces", "drive")
-	if c.cfg.DriveID != "" {
+	if c.driveID != "" {
 		values.Set("corpora", "drive")
-		values.Set("driveId", c.cfg.DriveID)
+		values.Set("driveId", c.driveID)
 	}
 	return values
 }
@@ -480,11 +420,7 @@ func (c *Client) baseGetValues() url.Values {
 	return values
 }
 
-func (c *Client) getJSON(ctx context.Context, requestURL string, out any) error {
-	return c.getJSONWithResourceKey(ctx, requestURL, "", "", out)
-}
-
-func (c *Client) getJSONWithResourceKey(ctx context.Context, requestURL string, id string, resourceKey string, out any) error {
+func (c *Client) getJSON(ctx context.Context, requestURL, id, resourceKey string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return err
@@ -523,10 +459,10 @@ func (c *Client) doRaw(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	req = cloneRequest(req)
-	req.Header.Set("Authorization", "Bearer "+token)
+	authed := req.Clone(req.Context())
+	authed.Header.Set("Authorization", "Bearer "+token)
 
-	res, err := c.httpClient.Do(req)
+	res, err := c.httpClient.Do(authed)
 	if err != nil {
 		return nil, err
 	}
@@ -537,9 +473,9 @@ func (c *Client) doRaw(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
-		req = cloneRequest(req)
-		req.Header.Set("Authorization", "Bearer "+token)
-		res, err = c.httpClient.Do(req)
+		authed = req.Clone(req.Context())
+		authed.Header.Set("Authorization", "Bearer "+token)
+		res, err = c.httpClient.Do(authed)
 		if err != nil {
 			return nil, err
 		}
@@ -568,9 +504,9 @@ func (c *Client) accessToken(ctx context.Context, force bool) (string, error) {
 	}
 
 	form := url.Values{}
-	form.Set("client_id", c.cfg.ClientID)
-	if c.cfg.ClientSecret != "" {
-		form.Set("client_secret", c.cfg.ClientSecret)
+	form.Set("client_id", c.clientID)
+	if c.clientSecret != "" {
+		form.Set("client_secret", c.clientSecret)
 	}
 	form.Set("refresh_token", c.token.RefreshToken)
 	form.Set("grant_type", "refresh_token")
@@ -591,7 +527,6 @@ func (c *Client) accessToken(ctx context.Context, force bool) (string, error) {
 	}
 	var refreshed struct {
 		AccessToken string `json:"access_token"`
-		TokenType   string `json:"token_type"`
 		ExpiresIn   int64  `json:"expires_in"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&refreshed); err != nil {
@@ -601,138 +536,74 @@ func (c *Client) accessToken(ctx context.Context, force bool) (string, error) {
 		return "", errors.New("token refresh returned empty access token")
 	}
 	c.token.AccessToken = refreshed.AccessToken
-	c.token.TokenType = refreshed.TokenType
-	if c.token.TokenType == "" {
-		c.token.TokenType = "Bearer"
-	}
 	if refreshed.ExpiresIn > 0 {
 		c.token.Expiry = time.Now().Add(time.Duration(refreshed.ExpiresIn) * time.Second)
 	}
 	return c.token.AccessToken, nil
 }
 
-func (c *Client) cachedFile(key string) (File, bool) {
-	c.cacheMu.RLock()
-	ttl := c.metadataCacheTTL
-	entry, ok := c.fileCache[key]
-	c.cacheMu.RUnlock()
+// ttlCache is a small expiring cache. Values are cloned on the way in and
+// out so callers can mutate results without corrupting cached entries. A
+// TTL of zero or less disables the cache.
+type ttlCache[T any] struct {
+	clone func(T) T
+
+	mu      sync.RWMutex
+	ttl     time.Duration
+	entries map[string]ttlEntry[T]
+}
+
+type ttlEntry[T any] struct {
+	value     T
+	expiresAt time.Time
+}
+
+func newTTLCache[T any](ttl time.Duration, clone func(T) T) *ttlCache[T] {
+	return &ttlCache[T]{clone: clone, ttl: ttl, entries: map[string]ttlEntry[T]{}}
+}
+
+// get clones outside the lock so concurrent hits do not serialize on the
+// copy; entries are never mutated in place, only replaced by put.
+func (c *ttlCache[T]) get(key string) (value T, ok bool) {
+	c.mu.RLock()
+	ttl := c.ttl
+	entry, ok := c.entries[key]
+	c.mu.RUnlock()
+	var zero T
 	if ttl <= 0 || !ok {
-		return File{}, false
+		return zero, false
 	}
 	if time.Now().After(entry.expiresAt) {
-		c.cacheMu.Lock()
-		if current, ok := c.fileCache[key]; ok && time.Now().After(current.expiresAt) {
-			delete(c.fileCache, key)
+		c.mu.Lock()
+		if current, ok := c.entries[key]; ok && time.Now().After(current.expiresAt) {
+			delete(c.entries, key)
 		}
-		c.cacheMu.Unlock()
-		return File{}, false
+		c.mu.Unlock()
+		return zero, false
 	}
-	return cloneFile(entry.file), true
+	return c.clone(entry.value), true
 }
 
-func (c *Client) putCachedFile(key string, file File) {
-	if file.ID == "" {
+func (c *ttlCache[T]) put(key string, value T) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ttl <= 0 {
 		return
 	}
-	c.cacheMu.Lock()
-	defer c.cacheMu.Unlock()
-	if c.metadataCacheTTL <= 0 {
-		return
-	}
-	c.fileCache[key] = cachedFile{
-		file:      cloneFile(file),
-		expiresAt: time.Now().Add(c.metadataCacheTTL),
-	}
+	c.entries[key] = ttlEntry[T]{value: c.clone(value), expiresAt: time.Now().Add(c.ttl)}
 }
 
-func (c *Client) cachedLookup(key string) ([]File, bool) {
-	c.cacheMu.RLock()
-	ttl := c.metadataCacheTTL
-	entry, ok := c.lookupCache[key]
-	c.cacheMu.RUnlock()
-	if ttl <= 0 || !ok {
-		return nil, false
-	}
-	if time.Now().After(entry.expiresAt) {
-		c.cacheMu.Lock()
-		if current, ok := c.lookupCache[key]; ok && time.Now().After(current.expiresAt) {
-			delete(c.lookupCache, key)
-		}
-		c.cacheMu.Unlock()
-		return nil, false
-	}
-	return cloneFiles(entry.files), true
-}
-
-func (c *Client) putCachedLookup(key string, files []File) {
-	c.cacheMu.Lock()
-	defer c.cacheMu.Unlock()
-	if c.metadataCacheTTL <= 0 {
-		return
-	}
-	c.lookupCache[key] = cachedFiles{
-		files:     cloneFiles(files),
-		expiresAt: time.Now().Add(c.metadataCacheTTL),
-	}
-}
-
-func (c *Client) cachedList(key string) (FileList, bool) {
-	c.cacheMu.RLock()
-	ttl := c.listCacheTTL
-	entry, ok := c.listCache[key]
-	c.cacheMu.RUnlock()
-	if ttl <= 0 || !ok {
-		return FileList{}, false
-	}
-	if time.Now().After(entry.expiresAt) {
-		c.cacheMu.Lock()
-		if current, ok := c.listCache[key]; ok && time.Now().After(current.expiresAt) {
-			delete(c.listCache, key)
-		}
-		c.cacheMu.Unlock()
-		return FileList{}, false
-	}
-	return cloneFileList(entry.list), true
-}
-
-func (c *Client) putCachedList(key string, list FileList) {
-	c.cacheMu.Lock()
-	defer c.cacheMu.Unlock()
-	if c.listCacheTTL <= 0 {
-		return
-	}
-	c.listCache[key] = cachedList{
-		list:      cloneFileList(list),
-		expiresAt: time.Now().Add(c.listCacheTTL),
-	}
-}
-
-func lookupCacheKey(parentID, parentResourceKey, name, itemType string) string {
-	return parentID + "\x00" + parentResourceKey + "\x00" + itemType + "\x00" + name
-}
-
-func fileCacheKey(id, resourceKey string) string {
-	return id + "\x00" + resourceKey
-}
-
-func listCacheKey(opts ListOptions, pageSize int, limit int) string {
-	return strings.Join([]string{
-		opts.FolderID,
-		opts.ResourceKey,
-		opts.Type,
-		opts.PageToken,
-		opts.OrderBy,
-		fmt.Sprintf("%d", pageSize),
-		fmt.Sprintf("%d", limit),
-	}, "\x00")
+// reset sets a new TTL and drops every entry.
+func (c *ttlCache[T]) reset(ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ttl = ttl
+	c.entries = map[string]ttlEntry[T]{}
 }
 
 func cloneFileList(list FileList) FileList {
-	return FileList{
-		Files:            cloneFiles(list.Files),
-		NextPageToken:    list.NextPageToken,
-		IncompleteSearch: list.IncompleteSearch,
-	}
+	list.Files = cloneFiles(list.Files)
+	return list
 }
 
 func cloneFiles(files []File) []File {
@@ -768,25 +639,15 @@ func cloneFile(file File) File {
 	return file
 }
 
+// quote escapes a string for use in a Drive query expression.
 func quote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `'`, `\'`)
 	return "'" + s + "'"
 }
 
-func normalizeListType(s string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "all":
-		return "all", nil
-	case "file", "files":
-		return "files", nil
-	case "folder", "folders", "dir", "dirs", "directory", "directories":
-		return "folders", nil
-	default:
-		return "", fmt.Errorf("invalid list type %q", s)
-	}
-}
-
+// normalizeItemType maps the accepted type aliases to "any", "file", or
+// "folder".
 func normalizeItemType(s string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "any", "all":
@@ -796,95 +657,79 @@ func normalizeItemType(s string) (string, error) {
 	case "folder", "folders", "dir", "dirs", "directory", "directories":
 		return "folder", nil
 	default:
-		return "", fmt.Errorf("invalid item type %q", s)
+		return "", &BadRequestError{msg: fmt.Sprintf("invalid item type %q", s)}
 	}
 }
 
-func typeLabel(itemType string) string {
+// normalizeListType accepts the same aliases as normalizeItemType except an
+// explicit "any", which list requests have always rejected.
+func normalizeListType(s string) (string, error) {
+	t, err := normalizeItemType(s)
+	if err != nil || strings.EqualFold(strings.TrimSpace(s), "any") {
+		return "", &BadRequestError{msg: fmt.Sprintf("invalid list type %q", s)}
+	}
+	return t, nil
+}
+
+var (
+	folderLikeQuery    = "(mimeType = " + quote(FolderMIME) + " or (mimeType = " + quote(shortcutMIME) + " and shortcutDetails.targetMimeType = " + quote(FolderMIME) + "))"
+	nonFolderLikeQuery = "(mimeType != " + quote(FolderMIME) + " and (mimeType != " + quote(shortcutMIME) + " or shortcutDetails.targetMimeType != " + quote(FolderMIME) + "))"
+)
+
+// typeFilter returns the Drive query clause for a canonical item type,
+// classifying shortcuts by their target type.
+func typeFilter(itemType string) string {
 	switch itemType {
 	case "file":
-		return "file"
+		return " and " + nonFolderLikeQuery
 	case "folder":
-		return "folder"
+		return " and " + folderLikeQuery
 	default:
-		return "item"
+		return ""
 	}
 }
 
+// filterResolvedItems re-checks the type filter on lookup results, since
+// the Drive query classifies shortcuts only by targetMimeType.
 func filterResolvedItems(files []File, itemType string) []File {
 	if itemType == "any" {
 		return files
 	}
 	filtered := files[:0]
 	for _, file := range files {
-		isFolder := effectiveMIMEType(file) == FolderMIME
-		if (itemType == "folder" && isFolder) || (itemType == "file" && !isFolder) {
+		if (itemType == "folder") == file.IsFolder() {
 			filtered = append(filtered, file)
 		}
 	}
 	return filtered
 }
 
-func folderLikeQuery() string {
-	return "(mimeType = " + quote(FolderMIME) + " or (mimeType = " + quote(ShortcutMIME) + " and shortcutDetails.targetMimeType = " + quote(FolderMIME) + "))"
-}
-
-func nonFolderLikeQuery() string {
-	return "(mimeType != " + quote(FolderMIME) + " and (mimeType != " + quote(ShortcutMIME) + " or shortcutDetails.targetMimeType != " + quote(FolderMIME) + "))"
-}
-
-func effectiveMIMEType(file File) string {
-	if file.ShortcutDetails != nil && file.ShortcutDetails.TargetMIMEType != "" {
-		return file.ShortcutDetails.TargetMIMEType
-	}
-	return file.MIMEType
-}
-
 func normalizePageSize(n int) int {
-	if n <= 0 {
-		return 1000
-	}
-	if n > 1000 {
+	if n <= 0 || n > 1000 {
 		return 1000
 	}
 	return n
 }
 
-func normalizeLimit(limit int, pageSize int) int {
+func normalizeLimit(limit, pageSize int) int {
 	if limit <= 0 {
 		return pageSize
 	}
-	if limit > 10000 {
-		return 10000
-	}
-	return limit
+	return min(limit, 10000)
 }
 
-func cloneRequest(req *http.Request) *http.Request {
-	cloned := req.Clone(req.Context())
-	cloned.Header = req.Header.Clone()
-	return cloned
-}
-
-func copySelectedHeaders(dst http.Header, src http.Header, keys ...string) {
+func copySelectedHeaders(dst, src http.Header, keys ...string) {
 	for _, key := range keys {
-		if value := src.Values(key); len(value) > 0 {
+		if values := src.Values(key); len(values) > 0 {
 			dst.Del(key)
-			for _, v := range value {
-				dst.Add(key, v)
+			for _, value := range values {
+				dst.Add(key, value)
 			}
 		}
 	}
 }
 
-func ReadableFileIDAndResourceKey(file File) (string, string) {
-	if file.ShortcutDetails != nil && file.ShortcutDetails.TargetID != "" {
-		return file.ShortcutDetails.TargetID, file.ShortcutDetails.TargetResourceKey
-	}
-	return file.ID, file.ResourceKey
-}
-
-func setResourceKeyHeader(req *http.Request, id string, resourceKey string) {
+func setResourceKeyHeader(req *http.Request, id, resourceKey string) {
 	if id == "" || resourceKey == "" {
 		return
 	}

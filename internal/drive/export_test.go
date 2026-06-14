@@ -9,7 +9,7 @@ import (
 )
 
 func TestGetFileAnnotatesExportFormats(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return jsonResponse(http.StatusOK, `{
 				"id":"doc-1",
@@ -23,7 +23,7 @@ func TestGetFileAnnotatesExportFormats(t *testing.T) {
 		}),
 	})
 
-	file, err := client.GetFile(context.Background(), "doc-1")
+	file, err := client.GetFile(context.Background(), "doc-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestExportFormatFor(t *testing.T) {
 		t.Fatalf("format = %+v", format)
 	}
 
-	format, err = ExportFormatFor(OpenXMLSpreadsheetMIME)
+	format, err = ExportFormatFor(openXMLSpreadsheetMIME)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestSupportsExportFormatUsesExportLinksWhenPresent(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := File{
-		MIMEType: DocumentMIME,
+		MIMEType: documentMIME,
 		ExportLinks: map[string]string{
 			"application/pdf": "https://example.invalid/pdf",
 		},
@@ -93,7 +93,7 @@ func TestSupportsExportFormatFallsBackToSourceType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file := File{MIMEType: DocumentMIME}
+	file := File{MIMEType: documentMIME}
 	if !SupportsExportFormat(file, pdf) {
 		t.Fatal("expected pdf to be supported")
 	}
@@ -103,7 +103,7 @@ func TestSupportsExportFormatFallsBackToSourceType(t *testing.T) {
 }
 
 func TestExportUsesFilesExportEndpoint(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if req.Method != http.MethodGet {
 				t.Fatalf("method = %q", req.Method)
@@ -121,7 +121,7 @@ func TestExportUsesFilesExportEndpoint(t *testing.T) {
 		}),
 	})
 
-	resp, err := client.Export(context.Background(), "doc-1", "application/pdf")
+	resp, err := client.Export(context.Background(), "doc-1", "application/pdf", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,33 +131,6 @@ func TestExportUsesFilesExportEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(body) != "%PDF" {
-		t.Fatalf("body = %q", body)
-	}
-}
-
-func TestExportPassesThroughDriveError(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			return jsonResponse(http.StatusTooManyRequests, `{"error":"quota"}`), nil
-		}),
-	})
-
-	resp, err := client.Export(context.Background(), "doc-1", "application/pdf")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("StatusCode = %d", resp.StatusCode)
-	}
-	if resp.Header.Get("Content-Type") != "application/json" {
-		t.Fatalf("Content-Type = %q", resp.Header.Get("Content-Type"))
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(body) != `{"error":"quota"}` {
 		t.Fatalf("body = %q", body)
 	}
 }

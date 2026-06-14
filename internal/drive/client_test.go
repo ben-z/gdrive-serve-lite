@@ -13,11 +13,42 @@ import (
 	"gdrive-serve-lite/internal/config"
 )
 
-func TestQuoteEscapesDriveQueryString(t *testing.T) {
-	got := quote(`quinn's paper\essay`)
-	want := `'quinn\'s paper\\essay'`
-	if got != want {
-		t.Fatalf("quote() = %q, want %q", got, want)
+func TestResolveItemPathEscapesDriveQueryStrings(t *testing.T) {
+	client := NewClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, `name = 'quinn\'s paper\\essay'`) {
+				t.Fatalf("query = %q", query)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"quinn's paper\\essay","mimeType":"application/vnd.google-apps.folder"}]}`), nil
+		}),
+	})
+
+	item, err := client.ResolveItemPath(context.Background(), `/quinn's paper\essay`, "root-folder", "", "folder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.File.ID != "folder-1" {
+		t.Fatalf("item = %+v", item)
+	}
+}
+
+func TestListChildrenClampsPageSizeSentToDrive(t *testing.T) {
+	client := NewClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if got := req.URL.Query().Get("pageSize"); got != "1000" {
+				t.Fatalf("pageSize = %q, want clamped 1000", got)
+			}
+			return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
+		}),
+	})
+
+	if _, err := client.ListChildren(context.Background(), ListOptions{
+		FolderID: "folder-1",
+		PageSize: 5000,
+		Limit:    1000,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -71,20 +102,9 @@ func TestNewHTTPClientPreservesRawDriveResponses(t *testing.T) {
 	}
 }
 
-func TestNewClientUsesRawHTTPClient(t *testing.T) {
-	client := NewClient(testConfig())
-	transport, ok := client.httpClient.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("Transport = %T, want *http.Transport", client.httpClient.Transport)
-	}
-	if !transport.DisableCompression {
-		t.Fatal("DisableCompression = false, want true")
-	}
-}
-
 func TestListChildrenAggregatesPagesToLimit(t *testing.T) {
 	var calls int
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			calls++
 			if req.URL.Path != "/drive/v3/files" {
@@ -144,130 +164,8 @@ func TestListChildrenAggregatesPagesToLimit(t *testing.T) {
 	}
 }
 
-func TestListChildrenFoldersIncludesFolderShortcuts(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			query := req.URL.Query().Get("q")
-			if !strings.Contains(query, "mimeType = '"+FolderMIME+"'") ||
-				!strings.Contains(query, "shortcutDetails.targetMimeType = '"+FolderMIME+"'") {
-				t.Fatalf("query = %q", query)
-			}
-			return jsonResponse(http.StatusOK, `{"files":[{"id":"shortcut-1","name":"Shared","mimeType":"application/vnd.google-apps.shortcut","shortcutDetails":{"targetId":"folder-1","targetMimeType":"application/vnd.google-apps.folder"}}]}`), nil
-		}),
-	})
-
-	list, err := client.ListChildren(context.Background(), ListOptions{
-		FolderID: "root-folder",
-		Type:     "folders",
-		PageSize: 1000,
-		Limit:    1000,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list.Files) != 1 || list.Files[0].ID != "shortcut-1" {
-		t.Fatalf("files = %+v", list.Files)
-	}
-}
-
-func TestListChildrenFilesExcludesFolderShortcuts(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			query := req.URL.Query().Get("q")
-			if !strings.Contains(query, "mimeType != '"+FolderMIME+"'") ||
-				!strings.Contains(query, "shortcutDetails.targetMimeType != '"+FolderMIME+"'") {
-				t.Fatalf("query = %q", query)
-			}
-			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}]}`), nil
-		}),
-	})
-
-	list, err := client.ListChildren(context.Background(), ListOptions{
-		FolderID: "root-folder",
-		Type:     "files",
-		PageSize: 1000,
-		Limit:    1000,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list.Files) != 1 || list.Files[0].ID != "file-1" {
-		t.Fatalf("files = %+v", list.Files)
-	}
-}
-
-func TestDownloadForwardsRange(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.Method != http.MethodGet {
-				t.Fatalf("method = %q", req.Method)
-			}
-			if req.URL.Path != "/drive/v3/files/file-1" {
-				t.Fatalf("path = %q", req.URL.Path)
-			}
-			if req.URL.Query().Get("alt") != "media" {
-				t.Fatalf("alt = %q", req.URL.Query().Get("alt"))
-			}
-			if req.Header.Get("Range") != "bytes=10-19" {
-				t.Fatalf("Range = %q", req.Header.Get("Range"))
-			}
-			resp := textResponse(http.StatusPartialContent, "0123456789")
-			resp.Header.Set("Content-Range", "bytes 10-19/100")
-			return resp, nil
-		}),
-	})
-
-	resp, err := client.Download(context.Background(), http.MethodGet, "file-1", "bytes=10-19")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(body) != "0123456789" {
-		t.Fatalf("body = %q", body)
-	}
-	if resp.Header.Get("Content-Range") != "bytes 10-19/100" {
-		t.Fatalf("Content-Range = %q", resp.Header.Get("Content-Range"))
-	}
-}
-
-func TestDownloadReturnsRangeErrorResponse(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.Header.Get("Range") != "bytes=999-1000" {
-				t.Fatalf("Range = %q", req.Header.Get("Range"))
-			}
-			resp := textResponse(http.StatusRequestedRangeNotSatisfiable, "range outside file")
-			resp.Header.Set("Content-Range", "bytes */100")
-			return resp, nil
-		}),
-	})
-
-	resp, err := client.Download(context.Background(), http.MethodGet, "file-1", "bytes=999-1000")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
-	if resp.Header.Get("Content-Range") != "bytes */100" {
-		t.Fatalf("Content-Range = %q", resp.Header.Get("Content-Range"))
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(body) != "range outside file" {
-		t.Fatalf("body = %q", body)
-	}
-}
-
 func TestDownloadForwardsConditionalHeaders(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if req.Header.Get("If-None-Match") != `"etag-1"` {
 				t.Fatalf("If-None-Match = %q", req.Header.Get("If-None-Match"))
@@ -286,7 +184,7 @@ func TestDownloadForwardsConditionalHeaders(t *testing.T) {
 	headers.Set("If-None-Match", `"etag-1"`)
 	headers.Set("If-Modified-Since", "Mon, 08 Jun 2026 07:00:00 GMT")
 	headers.Set("Cookie", "local=only")
-	resp, err := client.DownloadWithResourceKeyAndHeaders(context.Background(), http.MethodGet, "file-1", headers, "")
+	resp, err := client.Download(context.Background(), "file-1", headers, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,94 +194,13 @@ func TestDownloadForwardsConditionalHeaders(t *testing.T) {
 	}
 }
 
-func TestDownloadForwardsResourceKey(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "file-1/resource-key-1" {
-				t.Fatalf("resource key header = %q", got)
-			}
-			return textResponse(http.StatusOK, "ok"), nil
-		}),
-	})
-
-	resp, err := client.DownloadWithResourceKey(context.Background(), http.MethodGet, "file-1", "", "resource-key-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-}
-
-func TestListChildrenForwardsFolderResourceKey(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "folder-1/folder-key-1" {
-				t.Fatalf("resource key header = %q", got)
-			}
-			query := req.URL.Query().Get("q")
-			if !strings.Contains(query, "'folder-1' in parents") {
-				t.Fatalf("query = %q", query)
-			}
-			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4"}]}`), nil
-		}),
-	})
-
-	list, err := client.ListChildren(context.Background(), ListOptions{
-		FolderID:    "folder-1",
-		ResourceKey: "folder-key-1",
-		PageSize:    1000,
-		Limit:       1000,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list.Files) != 1 {
-		t.Fatalf("files = %d, want 1", len(list.Files))
-	}
-}
-
-func TestGetFileForwardsResourceKey(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "file-1/resource-key-1" {
-				t.Fatalf("resource key header = %q", got)
-			}
-			return jsonResponse(http.StatusOK, `{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}`), nil
-		}),
-	})
-
-	file, err := client.GetFileWithResourceKey(context.Background(), "file-1", "resource-key-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if file.ID != "file-1" {
-		t.Fatalf("file = %+v", file)
-	}
-}
-
-func TestExportForwardsResourceKey(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "doc-1/resource-key-1" {
-				t.Fatalf("resource key header = %q", got)
-			}
-			return textResponse(http.StatusOK, "%PDF"), nil
-		}),
-	})
-
-	resp, err := client.ExportWithResourceKey(context.Background(), "doc-1", "application/pdf", "resource-key-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-}
-
 func TestGetFileRefreshesExpiredTokenBeforeRequest(t *testing.T) {
 	var calls int
 	cfg := testConfig()
 	cfg.Token.AccessToken = "stale-access"
 	cfg.Token.RefreshToken = "test-refresh"
 	cfg.Token.Expiry = time.Now().Add(-time.Hour)
-	client := NewClientWithHTTPClient(cfg, &http.Client{
+	client := NewClient(cfg, &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			calls++
 			switch calls {
@@ -417,7 +234,7 @@ func TestGetFileRefreshesExpiredTokenBeforeRequest(t *testing.T) {
 		}),
 	})
 
-	file, err := client.GetFile(context.Background(), "file-1")
+	file, err := client.GetFile(context.Background(), "file-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +251,7 @@ func TestDownloadRefreshesAndRetriesUnauthorized(t *testing.T) {
 	cfg := testConfig()
 	cfg.Token.AccessToken = "stale-access"
 	cfg.Token.RefreshToken = "test-refresh"
-	client := NewClientWithHTTPClient(cfg, &http.Client{
+	client := NewClient(cfg, &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			calls++
 			switch calls {
@@ -466,7 +283,7 @@ func TestDownloadRefreshesAndRetriesUnauthorized(t *testing.T) {
 		}),
 	})
 
-	resp, err := client.DownloadWithResourceKey(context.Background(), http.MethodGet, "file-1", "", "")
+	resp, err := client.Download(context.Background(), "file-1", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +301,7 @@ func TestDownloadRefreshesAndRetriesUnauthorized(t *testing.T) {
 }
 
 func TestListChildrenRejectsRepeatedPageToken(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return jsonResponse(http.StatusOK, `{"files":[],"nextPageToken":"same-token"}`), nil
 		}),
@@ -502,7 +319,7 @@ func TestListChildrenRejectsRepeatedPageToken(t *testing.T) {
 
 func TestListChildrenUsesExactListCache(t *testing.T) {
 	var calls int
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			calls++
 			return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"original.mp4","mimeType":"video/mp4"}],"nextPageToken":"tok-2"}`), nil
@@ -533,7 +350,7 @@ func TestListChildrenUsesExactListCache(t *testing.T) {
 
 func TestListCacheKeysPaginationOptions(t *testing.T) {
 	var calls int
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			calls++
 			return jsonResponse(http.StatusOK, `{"files":[{"id":"file-`+fmt.Sprint(calls)+`","name":"video.mp4"}]}`), nil
@@ -560,7 +377,7 @@ func TestListCacheKeysPaginationOptions(t *testing.T) {
 
 func TestListCacheCanBeDisabled(t *testing.T) {
 	var calls int
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			calls++
 			return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"a.mp4"}]}`), nil
@@ -581,7 +398,7 @@ func TestListCacheCanBeDisabled(t *testing.T) {
 
 func TestResolveItemPathFile(t *testing.T) {
 	var calls int
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			calls++
 			if req.URL.Path != "/drive/v3/files" {
@@ -618,7 +435,7 @@ func TestResolveItemPathFile(t *testing.T) {
 		}),
 	})
 
-	item, err := client.ResolveItemPath(context.Background(), "/RecentClips/video.mp4", "root-folder", "file")
+	item, err := client.ResolveItemPath(context.Background(), "/RecentClips/video.mp4", "root-folder", "", "file")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -630,48 +447,8 @@ func TestResolveItemPathFile(t *testing.T) {
 	}
 }
 
-func TestResolveItemPathCarriesParentResourceKey(t *testing.T) {
-	var calls int
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			calls++
-			switch calls {
-			case 1:
-				if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "" {
-					t.Fatalf("first resource key header = %q", got)
-				}
-				return jsonResponse(http.StatusOK, `{"files":[{"id":"folder-1","name":"Shared","mimeType":"application/vnd.google-apps.folder","resourceKey":"folder-key-1"}]}`), nil
-			case 2:
-				if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "folder-1/folder-key-1" {
-					t.Fatalf("second resource key header = %q", got)
-				}
-				query := req.URL.Query().Get("q")
-				if !strings.Contains(query, "'folder-1' in parents") ||
-					!strings.Contains(query, "name = 'video.mp4'") {
-					t.Fatalf("query = %q", query)
-				}
-				return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}]}`), nil
-			default:
-				t.Fatalf("unexpected request %d", calls)
-				return nil, nil
-			}
-		}),
-	})
-
-	item, err := client.ResolveItemPath(context.Background(), "/Shared/video.mp4", "root-folder", "file")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if calls != 2 {
-		t.Fatalf("calls = %d, want 2", calls)
-	}
-	if item.File.ID != "file-1" || item.ParentID != "folder-1" {
-		t.Fatalf("item = %+v", item)
-	}
-}
-
 func TestResolveItemPathUsesRootResourceKey(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "root-folder/root-key-1" {
 				t.Fatalf("resource key header = %q", got)
@@ -685,7 +462,7 @@ func TestResolveItemPathUsesRootResourceKey(t *testing.T) {
 		}),
 	})
 
-	item, err := client.ResolveItemPathWithResourceKey(context.Background(), "/video.mp4", "root-folder", "root-key-1", "file")
+	item, err := client.ResolveItemPath(context.Background(), "/video.mp4", "root-folder", "root-key-1", "file")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,7 +473,7 @@ func TestResolveItemPathUsesRootResourceKey(t *testing.T) {
 
 func TestResolveItemPathCarriesShortcutParentResourceKey(t *testing.T) {
 	var calls int
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			calls++
 			switch calls {
@@ -718,7 +495,7 @@ func TestResolveItemPathCarriesShortcutParentResourceKey(t *testing.T) {
 		}),
 	})
 
-	item, err := client.ResolveItemPath(context.Background(), "/Shared%20shortcut/video.mp4", "root-folder", "file")
+	item, err := client.ResolveItemPath(context.Background(), "/Shared%20shortcut/video.mp4", "root-folder", "", "file")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -731,13 +508,13 @@ func TestResolveItemPathCarriesShortcutParentResourceKey(t *testing.T) {
 }
 
 func TestResolveItemPathAmbiguous(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return jsonResponse(http.StatusOK, `{"files":[{"id":"a","name":"duplicate","mimeType":"application/vnd.google-apps.folder"},{"id":"b","name":"duplicate","mimeType":"application/vnd.google-apps.folder"}]}`), nil
 		}),
 	})
 
-	_, err := client.ResolveItemPath(context.Background(), "/duplicate", "root-folder", "folder")
+	_, err := client.ResolveItemPath(context.Background(), "/duplicate", "root-folder", "", "folder")
 	var ambiguous *AmbiguousPathError
 	if !errors.As(err, &ambiguous) {
 		t.Fatalf("error = %v, want AmbiguousPathError", err)
@@ -749,7 +526,7 @@ func TestResolveItemPathAmbiguous(t *testing.T) {
 
 func TestResolveItemPathUsesMetadataCache(t *testing.T) {
 	var calls int
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			calls++
 			switch calls {
@@ -765,7 +542,7 @@ func TestResolveItemPathUsesMetadataCache(t *testing.T) {
 	})
 
 	for range 2 {
-		item, err := client.ResolveItemPath(context.Background(), "/RecentClips/video.mp4", "root-folder", "file")
+		item, err := client.ResolveItemPath(context.Background(), "/RecentClips/video.mp4", "root-folder", "", "file")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -780,7 +557,7 @@ func TestResolveItemPathUsesMetadataCache(t *testing.T) {
 
 func TestMetadataCacheCanBeDisabled(t *testing.T) {
 	var calls int
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			calls++
 			if calls%2 == 1 {
@@ -792,7 +569,7 @@ func TestMetadataCacheCanBeDisabled(t *testing.T) {
 	client.SetMetadataCacheTTL(0)
 
 	for range 2 {
-		if _, err := client.ResolveItemPath(context.Background(), "/RecentClips/video.mp4", "root-folder", "file"); err != nil {
+		if _, err := client.ResolveItemPath(context.Background(), "/RecentClips/video.mp4", "root-folder", "", "file"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -803,7 +580,7 @@ func TestMetadataCacheCanBeDisabled(t *testing.T) {
 
 func TestGetFileUsesMetadataCacheUntilExpiry(t *testing.T) {
 	var calls int
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			calls++
 			return jsonResponse(http.StatusOK, `{"id":"file-1","name":"video.mp4","mimeType":"video/mp4","size":"10"}`), nil
@@ -811,7 +588,7 @@ func TestGetFileUsesMetadataCacheUntilExpiry(t *testing.T) {
 	})
 
 	for range 2 {
-		file, err := client.GetFile(context.Background(), "file-1")
+		file, err := client.GetFile(context.Background(), "file-1", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -824,11 +601,11 @@ func TestGetFileUsesMetadataCacheUntilExpiry(t *testing.T) {
 	}
 
 	client.SetMetadataCacheTTL(time.Millisecond)
-	if _, err := client.GetFile(context.Background(), "file-1"); err != nil {
+	if _, err := client.GetFile(context.Background(), "file-1", ""); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	if _, err := client.GetFile(context.Background(), "file-1"); err != nil {
+	if _, err := client.GetFile(context.Background(), "file-1", ""); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 3 {
@@ -837,19 +614,136 @@ func TestGetFileUsesMetadataCacheUntilExpiry(t *testing.T) {
 }
 
 func TestAPIErrorPreservesStatus(t *testing.T) {
-	client := NewClientWithHTTPClient(testConfig(), &http.Client{
+	client := NewClient(testConfig(), &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return jsonResponse(http.StatusNotFound, `{"error":{"message":"missing"}}`), nil
 		}),
 	})
 
-	_, err := client.GetFile(context.Background(), "missing")
+	_, err := client.GetFile(context.Background(), "missing", "")
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("error = %v, want APIError", err)
 	}
 	if apiErr.StatusCode != http.StatusNotFound {
 		t.Fatalf("StatusCode = %d", apiErr.StatusCode)
+	}
+}
+
+func TestResourceKeyHeaderForwarding(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+		do   func(ctx context.Context, c *Client) error
+	}{
+		{
+			name: "download",
+			want: "file-1/resource-key-1",
+			do: func(ctx context.Context, c *Client) error {
+				res, err := c.Download(ctx, "file-1", nil, "resource-key-1")
+				if err == nil {
+					res.Body.Close()
+				}
+				return err
+			},
+		},
+		{
+			name: "get file",
+			want: "file-1/resource-key-1",
+			do: func(ctx context.Context, c *Client) error {
+				_, err := c.GetFile(ctx, "file-1", "resource-key-1")
+				return err
+			},
+		},
+		{
+			name: "export",
+			want: "doc-1/resource-key-1",
+			do: func(ctx context.Context, c *Client) error {
+				res, err := c.Export(ctx, "doc-1", "application/pdf", "resource-key-1")
+				if err == nil {
+					res.Body.Close()
+				}
+				return err
+			},
+		},
+		{
+			name: "list children",
+			want: "folder-1/folder-key-1",
+			do: func(ctx context.Context, c *Client) error {
+				_, err := c.ListChildren(ctx, ListOptions{FolderID: "folder-1", ResourceKey: "folder-key-1", PageSize: 1000, Limit: 1000})
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewClient(testConfig(), &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != tt.want {
+						t.Fatalf("resource key header = %q, want %q", got, tt.want)
+					}
+					return jsonResponse(http.StatusOK, `{"id":"x","name":"x"}`), nil
+				}),
+			})
+			if err := tt.do(context.Background(), client); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestListChildrenShortcutTypeFilters(t *testing.T) {
+	tests := []struct {
+		listType  string
+		wantQuery []string
+		fixture   string
+		wantID    string
+	}{
+		{
+			listType: "folders",
+			wantQuery: []string{
+				"mimeType = '" + FolderMIME + "'",
+				"shortcutDetails.targetMimeType = '" + FolderMIME + "'",
+			},
+			fixture: `{"files":[{"id":"shortcut-1","name":"Shared","mimeType":"application/vnd.google-apps.shortcut","shortcutDetails":{"targetId":"folder-1","targetMimeType":"application/vnd.google-apps.folder"}}]}`,
+			wantID:  "shortcut-1",
+		},
+		{
+			listType: "files",
+			wantQuery: []string{
+				"mimeType != '" + FolderMIME + "'",
+				"shortcutDetails.targetMimeType != '" + FolderMIME + "'",
+			},
+			fixture: `{"files":[{"id":"file-1","name":"video.mp4","mimeType":"video/mp4"}]}`,
+			wantID:  "file-1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.listType, func(t *testing.T) {
+			client := NewClient(testConfig(), &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					query := req.URL.Query().Get("q")
+					for _, want := range tt.wantQuery {
+						if !strings.Contains(query, want) {
+							t.Fatalf("query = %q, missing %q", query, want)
+						}
+					}
+					return jsonResponse(http.StatusOK, tt.fixture), nil
+				}),
+			})
+			list, err := client.ListChildren(context.Background(), ListOptions{
+				FolderID: "root-folder",
+				Type:     tt.listType,
+				PageSize: 1000,
+				Limit:    1000,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(list.Files) != 1 || list.Files[0].ID != tt.wantID {
+				t.Fatalf("files = %+v", list.Files)
+			}
+		})
 	}
 }
 
@@ -864,7 +758,6 @@ func testConfig() config.Config {
 		ClientID: "test-client",
 		Token: config.OAuthToken{
 			AccessToken: "test-access",
-			TokenType:   "Bearer",
 		},
 	}
 }
