@@ -1,8 +1,9 @@
 /gdrive-serve-lite
-*.log
-.DS_Store
-tmp/
-dist/
+/*.log
+**/.DS_Store
+/tmp/
+/dist/
+/.claude
 
 # Local credentials and machine-specific overrides.
 /.env
