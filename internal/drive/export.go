@@ -75,7 +75,7 @@ var exportPriority = map[string]int{
 func ExportFormatFor(s string) (ExportFormat, error) {
 	raw := strings.TrimSpace(s)
 	if raw == "" {
-		return ExportFormat{}, errors.New("export format or MIME type is required")
+		return ExportFormat{}, fmt.Errorf("%w: export format or MIME type is required", ErrUnsupportedExport)
 	}
 	key := strings.TrimPrefix(strings.ToLower(raw), ".")
 	if format, ok := exportFormatsByName[key]; ok {
