@@ -149,6 +149,8 @@ func TestStartupRejectsInvalidOptions(t *testing.T) {
 		{"empty remote", []string{"--remote=:/Videos"}, "--remote requires a remote name"},
 		{"config without remote", []string{"--config=selected.conf"}, "--config requires --remote"},
 		{"partial auth", []string{"--user=ben"}, "--user and --pass must be set together"},
+		{"colon in username", []string{"--user=fixture:user", "--pass=fixture-pass"}, "--user must not contain a colon"},
+		{"colon in password", []string{"--user=fixture-user", "--pass=fixture:pass"}, "no auth config found"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			args := append([]string{"-test.run=^TestStartupRejectsInvalidOptions$", "--"}, tt.args...)
