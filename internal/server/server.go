@@ -68,6 +68,9 @@ func New(client *drive.Client, opts Options) *Server {
 	return s
 }
 
+// HTML and SVG previews share the server's origin; disable their scripts.
+const fileContentSecurityPolicy = "script-src 'none'"
+
 var readResponseHeaders = []string{
 	"Content-Type",
 	"Content-Length",
@@ -493,6 +496,7 @@ func (s *Server) streamExport(w http.ResponseWriter, r *http.Request, file drive
 func streamResponse(w http.ResponseWriter, res *http.Response, contentType, name string) {
 	defer res.Body.Close()
 	copyReadResponseHeaders(w.Header(), res.Header)
+	w.Header().Set("Content-Security-Policy", fileContentSecurityPolicy)
 	if isReadSuccess(res.StatusCode) {
 		if contentType != "" && w.Header().Get("Content-Type") == "" {
 			w.Header().Set("Content-Type", contentType)
@@ -912,6 +916,7 @@ func writeFileHead(w http.ResponseWriter, r *http.Request, meta drive.File, name
 			return
 		}
 	}
+	w.Header().Set("Content-Security-Policy", fileContentSecurityPolicy)
 	if writeConditionalHead(w, r, meta.ModifiedTime) {
 		return
 	}
@@ -934,6 +939,7 @@ func writeFileHead(w http.ResponseWriter, r *http.Request, meta drive.File, name
 }
 
 func writeExportHead(w http.ResponseWriter, r *http.Request, file drive.File, format drive.ExportFormat, name string) {
+	w.Header().Set("Content-Security-Policy", fileContentSecurityPolicy)
 	if writeConditionalHead(w, r, file.ModifiedTime) {
 		return
 	}
