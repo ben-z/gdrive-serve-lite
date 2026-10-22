@@ -902,6 +902,12 @@ func resolveResponse(item *drive.ResolvedItem) ResolveResponse {
 }
 
 func writeFileHead(w http.ResponseWriter, r *http.Request, meta drive.File, name string) {
+	if meta.Size != "" {
+		if _, err := strconv.ParseUint(meta.Size, 10, 63); err != nil {
+			writeError(w, errors.New("invalid file size in Drive metadata"))
+			return
+		}
+	}
 	if writeConditionalHead(w, r, meta.ModifiedTime) {
 		return
 	}
