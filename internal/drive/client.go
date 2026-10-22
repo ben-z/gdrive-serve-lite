@@ -438,10 +438,25 @@ func (c *Client) getJSON(ctx context.Context, requestURL, id, resourceKey string
 		return err
 	}
 	defer res.Body.Close()
-	if err := json.NewDecoder(res.Body).Decode(out); err != nil {
+	if err := readJSON(res.Body, out); err != nil {
 		return fmt.Errorf("decode Drive response: %w", err)
 	}
 	return nil
+}
+
+type jsonResponseReadError struct{ err error }
+
+func (e *jsonResponseReadError) Error() string { return "read JSON response body failed" }
+func (e *jsonResponseReadError) Unwrap() error { return e.err }
+
+// Drive and OAuth return one JSON value; require EOF before accepting it.
+func readJSON(reader io.Reader, out any) error {
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		// HTTP protocol errors can contain upstream trailer text.
+		return &jsonResponseReadError{err: err}
+	}
+	return json.Unmarshal(body, out)
 }
 
 func (c *Client) do(req *http.Request) (*http.Response, error) {
@@ -557,7 +572,7 @@ func (c *Client) accessToken(ctx context.Context, rejectedToken string) (string,
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int64  `json:"expires_in"`
 	}
-	if err := json.NewDecoder(res.Body).Decode(&refreshed); err != nil {
+	if err := readJSON(res.Body, &refreshed); err != nil {
 		return "", fmt.Errorf("decode token refresh: %w", err)
 	}
 	if refreshed.AccessToken == "" {
