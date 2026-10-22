@@ -8,6 +8,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -122,7 +123,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", s.handleRoot)
 	var handler http.Handler = mux
 	if s.basePath != "" {
-		handler = basePathMiddleware(s.basePath, handler)
+		handler = basePathMiddleware(s.basePath, mux)
 	}
 	if s.auth != nil {
 		handler = s.authMiddleware(handler)
@@ -284,7 +285,7 @@ func (s *Server) handleExportFormats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Range") != "" {
+	if r.Method != http.MethodHead && r.Header.Get("Range") != "" {
 		badRequest(w, "Range is not supported for Drive exports")
 		return
 	}
@@ -393,8 +394,18 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 
 func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p folderPath, folder folderRef) {
 	w.Header().Add("Vary", "Accept")
+	jsonResponse, err := wantsJSON(r)
+	if err != nil {
+		badRequest(w, err.Error())
+		return
+	}
 	if r.Method == http.MethodHead {
-		writeFolderHead(w, r)
+		contentType := "text/html; charset=utf-8"
+		if jsonResponse {
+			contentType = "application/json; charset=utf-8"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	opts, err := listOptions(r, folder)
@@ -407,7 +418,7 @@ func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p folde
 		writeError(w, err)
 		return
 	}
-	if wantsJSON(r) {
+	if jsonResponse {
 		writeJSON(w, http.StatusOK, s.listResponse(r, p.Display, folder, list))
 		return
 	}
@@ -582,7 +593,8 @@ func escapedPath(r *http.Request) string {
 	return r.URL.EscapedPath()
 }
 
-func basePathMiddleware(basePath string, next http.Handler) http.Handler {
+func basePathMiddleware(basePath string, mux *http.ServeMux) http.Handler {
+	escapedBase := (&url.URL{Path: basePath}).EscapedPath()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != basePath && !strings.HasPrefix(r.URL.Path, basePath+"/") {
 			http.NotFound(w, r)
@@ -599,8 +611,56 @@ func basePathMiddleware(basePath string, next http.Handler) http.Handler {
 			// Normalize the matched separator so the stripped URL stays absolute.
 			stripped.URL.RawPath = "/" + stripRawPrefix(r.URL.EscapedPath(), basePath+"/")
 		}
-		next.ServeHTTP(w, stripped)
+		_, hadContentType := w.Header()["Content-Type"]
+		mux.ServeHTTP(&basePathResponseWriter{
+			ResponseWriter:  w,
+			request:         r,
+			escapedBasePath: escapedBase,
+			hadContentType:  hadContentType,
+		}, stripped)
 	})
+}
+
+// ServeMux computes canonical redirects after the request prefix is stripped.
+// Re-emit them with the base path so both Location and the HTML link stay local.
+type basePathResponseWriter struct {
+	http.ResponseWriter
+	request         *http.Request
+	escapedBasePath string
+	hadContentType  bool
+	redirected      bool
+}
+
+func (w *basePathResponseWriter) WriteHeader(status int) {
+	location := w.Header().Get("Location")
+	if status >= 300 && status < 400 && strings.HasPrefix(location, "/") {
+		w.redirected = true
+		if !w.hadContentType {
+			w.Header().Del("Content-Type")
+		}
+		http.Redirect(w.ResponseWriter, w.request, w.escapedBasePath+location, status)
+		return
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *basePathResponseWriter) Write(p []byte) (int, error) {
+	if w.redirected {
+		// The adjusted redirect already includes its response body.
+		return len(p), nil
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *basePathResponseWriter) ReadFrom(r io.Reader) (int64, error) {
+	if w.redirected {
+		return io.Copy(io.Discard, r)
+	}
+	return io.Copy(w.ResponseWriter, r)
+}
+
+func (w *basePathResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 // stripRawPrefix strips a prefix already matched against the decoded path.
@@ -825,15 +885,6 @@ func supportsRangeHead(file drive.File) bool {
 	return file.Size != "" && !isWorkspaceReadable(file) && !file.IsFolder()
 }
 
-func writeFolderHead(w http.ResponseWriter, r *http.Request) {
-	if wantsJSON(r) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	} else {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	}
-	w.WriteHeader(http.StatusOK)
-}
-
 // writeNotModifiedHead writes a 304 when If-Modified-Since proves the Drive
 // metadata fresh; it always sets Last-Modified when the time is known.
 func writeNotModifiedHead(w http.ResponseWriter, r *http.Request, modifiedTime string) bool {
@@ -944,20 +995,87 @@ func intParam(query url.Values, name string) (int, error) {
 	return n, nil
 }
 
-func wantsJSON(r *http.Request) bool {
+func wantsJSON(r *http.Request) (bool, error) {
 	query := r.URL.Query()
 	if strings.EqualFold(query.Get("format"), "json") ||
 		strings.EqualFold(query.Get("alt"), "json") ||
 		strings.EqualFold(query.Get("json"), "1") {
-		return true
+		return true, nil
 	}
-	for _, part := range strings.Split(r.Header.Get("Accept"), ",") {
-		mediaType := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
+	ranges, err := splitAcceptRanges(strings.Join(r.Header.Values("Accept"), ","))
+	if err != nil {
+		return false, err
+	}
+	wantsJSON := false
+	for _, part := range ranges {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		mediaType, params, err := mime.ParseMediaType(part)
+		if err != nil {
+			return false, fmt.Errorf("invalid Accept media range %q: %w", part, err)
+		}
+		typeName, subtype, ok := strings.Cut(mediaType, "/")
+		if !ok || (typeName == "*" && subtype != "*") {
+			return false, fmt.Errorf("invalid Accept media range %q", part)
+		}
+		if raw, ok := params["q"]; ok {
+			nonzero, err := nonzeroAcceptQuality(raw)
+			if err != nil {
+				return false, err
+			}
+			if !nonzero {
+				continue
+			}
+		}
 		if mediaType == "application/json" || strings.HasSuffix(mediaType, "+json") {
-			return true
+			wantsJSON = true
 		}
 	}
-	return false
+	return wantsJSON, nil
+}
+
+func splitAcceptRanges(header string) ([]string, error) {
+	var ranges []string
+	start := 0
+	quoted, escaped := false, false
+	for i := 0; i < len(header); i++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch header[i] {
+		case '\\':
+			escaped = quoted
+		case '"':
+			quoted = !quoted
+		case ',':
+			if !quoted {
+				ranges = append(ranges, header[start:i])
+				start = i + 1
+			}
+		}
+	}
+	if quoted {
+		return nil, errors.New("invalid Accept header: unterminated quoted string")
+	}
+	return append(ranges, header[start:]), nil
+}
+
+func nonzeroAcceptQuality(raw string) (bool, error) {
+	const invalid = "invalid Accept quality %q: expected 0 to 1 with at most three decimal places"
+	if len(raw) == 0 || len(raw) > 5 || (raw[0] != '0' && raw[0] != '1') || (len(raw) > 1 && raw[1] != '.') {
+		return false, fmt.Errorf(invalid, raw)
+	}
+	nonzero := raw[0] == '1'
+	for i := 2; i < len(raw); i++ {
+		if raw[i] < '0' || raw[i] > '9' || (raw[0] == '1' && raw[i] != '0') {
+			return false, fmt.Errorf(invalid, raw)
+		}
+		nonzero = nonzero || raw[i] != '0'
+	}
+	return nonzero, nil
 }
 
 func withResourceKey(link, resourceKey string) string {

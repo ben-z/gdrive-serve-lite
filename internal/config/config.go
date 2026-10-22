@@ -42,6 +42,9 @@ func (c Config) Validate() error {
 	if c.Token.RefreshToken != "" && c.ClientID == "" {
 		return errors.New("refresh token is set but client ID is missing")
 	}
+	if c.Token.RefreshToken == "" && !c.Token.Expiry.IsZero() && !c.Token.Expiry.After(time.Now()) {
+		return errors.New("access token is expired and no refresh token is set")
+	}
 	return nil
 }
 

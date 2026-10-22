@@ -6,7 +6,81 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"gdrive-serve-lite/internal/config"
 )
+
+func TestRootOverridesKeepResourceKeysWithTheirFolder(t *testing.T) {
+	for _, tt := range []struct {
+		name              string
+		cfg               config.Config
+		folderID          string
+		driveID           string
+		resourceKey       string
+		wantRoot, wantKey string
+	}{
+		{
+			name:     "configured folder unchanged",
+			cfg:      config.Config{RootFolderID: "folder-a", RootResourceKey: "key-a"},
+			wantRoot: "folder-a", wantKey: "key-a",
+		},
+		{
+			name:     "same folder override keeps key",
+			cfg:      config.Config{RootFolderID: "folder-a", RootResourceKey: "key-a"},
+			folderID: "folder-a", wantRoot: "folder-a", wantKey: "key-a",
+		},
+		{
+			name:     "new folder clears old key",
+			cfg:      config.Config{RootFolderID: "folder-a", RootResourceKey: "key-a"},
+			folderID: "folder-b", wantRoot: "folder-b",
+		},
+		{
+			name:     "new folder uses explicit key",
+			cfg:      config.Config{RootFolderID: "folder-a", RootResourceKey: "key-a"},
+			folderID: "folder-b", resourceKey: "key-b", wantRoot: "folder-b", wantKey: "key-b",
+		},
+		{
+			name:    "same drive root keeps key",
+			cfg:     config.Config{DriveID: "drive-a", RootResourceKey: "key-a"},
+			driveID: "drive-a", wantRoot: "drive-a", wantKey: "key-a",
+		},
+		{
+			name:    "new implicit drive root clears key",
+			cfg:     config.Config{DriveID: "drive-a", RootResourceKey: "key-a"},
+			driveID: "drive-b", wantRoot: "drive-b",
+		},
+		{
+			name:    "new implicit drive root uses explicit key",
+			cfg:     config.Config{DriveID: "drive-a", RootResourceKey: "key-a"},
+			driveID: "drive-b", resourceKey: "key-b", wantRoot: "drive-b", wantKey: "key-b",
+		},
+		{
+			name:    "drive override preserves explicit folder key",
+			cfg:     config.Config{DriveID: "drive-a", RootFolderID: "folder-a", RootResourceKey: "key-a"},
+			driveID: "drive-b", wantRoot: "folder-a", wantKey: "key-a",
+		},
+		{
+			name:     "explicit root equal to old implicit root keeps key",
+			cfg:      config.Config{DriveID: "drive-a", RootResourceKey: "key-a"},
+			folderID: "drive-a", driveID: "drive-b", wantRoot: "drive-a", wantKey: "key-a",
+		},
+		{
+			name:        "explicit key replaces same root key",
+			cfg:         config.Config{RootFolderID: "folder-a", RootResourceKey: "old-key"},
+			resourceKey: "new-key", wantRoot: "folder-a", wantKey: "new-key",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := applyRootOverrides(tt.cfg, tt.folderID, tt.driveID, tt.resourceKey)
+			if got.EffectiveRootFolderID() != tt.wantRoot || got.RootResourceKey != tt.wantKey {
+				t.Fatalf("root = %q, key = %q; want root %q, key %q", got.EffectiveRootFolderID(), got.RootResourceKey, tt.wantRoot, tt.wantKey)
+			}
+			if tt.driveID != "" && got.DriveID != tt.driveID {
+				t.Fatalf("DriveID = %q, want %q", got.DriveID, tt.driveID)
+			}
+		})
+	}
+}
 
 func TestSplitRemotePath(t *testing.T) {
 	tests := []struct {

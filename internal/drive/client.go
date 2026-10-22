@@ -134,8 +134,8 @@ type Client struct {
 	driveID      string
 	httpClient   *http.Client
 
-	mu    sync.Mutex
-	token config.OAuthToken
+	tokenLock chan struct{}
+	token     config.OAuthToken // RefreshToken is immutable; tokenLock guards AccessToken and Expiry.
 
 	files   *ttlCache[File]
 	lookups *ttlCache[[]File]
@@ -148,6 +148,7 @@ func NewClient(cfg config.Config, httpClient *http.Client) *Client {
 		clientSecret: cfg.ClientSecret,
 		driveID:      cfg.DriveID,
 		httpClient:   httpClient,
+		tokenLock:    make(chan struct{}, 1),
 		token:        cfg.Token,
 		files:        newTTLCache(DefaultMetadataCacheTTL, cloneFile),
 		lookups:      newTTLCache(DefaultMetadataCacheTTL, cloneFiles),
@@ -470,7 +471,7 @@ func (c *Client) doRaw(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	if res.StatusCode == http.StatusUnauthorized && c.canRefresh() {
+	if res.StatusCode == http.StatusUnauthorized && c.token.RefreshToken != "" {
 		res.Body.Close()
 		token, err = c.accessToken(req.Context(), token)
 		if err != nil {
@@ -486,15 +487,16 @@ func (c *Client) doRaw(req *http.Request) (*http.Response, error) {
 	return res, nil
 }
 
-func (c *Client) canRefresh() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.token.RefreshToken != ""
-}
-
 func (c *Client) accessToken(ctx context.Context, rejectedToken string) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	select {
+	case c.tokenLock <- struct{}{}:
+		defer func() { <-c.tokenLock }()
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 
 	// A concurrent request may already have replaced the rejected token.
 	if c.token.AccessToken != "" && c.token.AccessToken != rejectedToken &&
@@ -502,10 +504,17 @@ func (c *Client) accessToken(ctx context.Context, rejectedToken string) (string,
 		return c.token.AccessToken, nil
 	}
 	if c.token.RefreshToken == "" {
-		if c.token.AccessToken != "" {
-			return c.token.AccessToken, nil
+		if c.token.AccessToken == "" {
+			return "", errors.New("missing access token and refresh token")
 		}
-		return "", errors.New("missing access token and refresh token")
+		if !c.token.Expiry.IsZero() && time.Until(c.token.Expiry) <= 0 {
+			return "", &APIError{
+				StatusCode: http.StatusUnauthorized,
+				Status:     "401 Unauthorized",
+				Body:       "access token has expired and no refresh token is configured",
+			}
+		}
+		return c.token.AccessToken, nil
 	}
 
 	form := url.Values{}

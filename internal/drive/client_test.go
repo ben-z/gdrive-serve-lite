@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -244,6 +245,54 @@ func TestGetFileRefreshesExpiredTokenBeforeRequest(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestAccessTokenOnlyHonorsExpiryAtRequestTime(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		expiry  time.Time
+		expired bool
+	}{
+		{"expired", time.Now().Add(-time.Hour), true},
+		{"within refresh leeway", time.Now().Add(30 * time.Second), false},
+		{"unknown expiry", time.Time{}, false},
+	} {
+		for _, operation := range []string{"download", "metadata"} {
+			t.Run(tc.name+"/"+operation, func(t *testing.T) {
+				calls := 0
+				cfg := testConfig()
+				cfg.Token.Expiry = tc.expiry
+				client := NewClient(cfg, &http.Client{
+					Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+						calls++
+						return jsonResponse(http.StatusOK, `{"id":"file-1","name":"clip.mp4"}`), nil
+					}),
+				})
+				var err error
+				if operation == "download" {
+					var response *http.Response
+					response, err = client.Download(context.Background(), "file-1", nil, "")
+					if response != nil {
+						response.Body.Close()
+					}
+				} else {
+					_, err = client.GetFile(context.Background(), "file-1", "")
+				}
+				if tc.expired {
+					var apiErr *APIError
+					if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnauthorized ||
+						!strings.Contains(apiErr.Body, "access token has expired") {
+						t.Fatalf("error = %v, want expired-token HTTP 401 error", err)
+					}
+					if calls != 0 {
+						t.Fatalf("sent %d upstream requests with an expired token", calls)
+					}
+				} else if err != nil || calls != 1 {
+					t.Fatalf("error = %v, calls = %d; want success and one upstream request", err, calls)
+				}
+			})
+		}
 	}
 }
 
@@ -918,6 +967,85 @@ func TestConcurrentUnauthorizedRequestsShareRefresh(t *testing.T) {
 	if got := refreshes.Load(); got != 1 {
 		t.Fatalf("refreshes = %d, want 1", got)
 	}
+}
+
+func TestCanceledRequestDoesNotWaitForAnotherRefresh(t *testing.T) {
+	for _, cancelBeforeRequest := range []bool{false, true} {
+		t.Run(fmt.Sprintf("alreadyCanceled=%t", cancelBeforeRequest), func(t *testing.T) {
+			started, release := make(chan struct{}), make(chan struct{})
+			cfg := testConfig()
+			cfg.Token.AccessToken = ""
+			cfg.Token.RefreshToken = "refresh-token"
+			client := NewClient(cfg, &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					if req.URL.Host == "oauth2.googleapis.com" {
+						close(started)
+						<-release
+						return jsonResponse(http.StatusOK, `{"access_token":"fresh-token","expires_in":3600}`), nil
+					}
+					return jsonResponse(http.StatusOK, `{"id":"first","name":"first"}`), nil
+				}),
+			})
+			firstDone := make(chan error, 1)
+			go func() {
+				_, err := client.GetFile(context.Background(), "first", "")
+				firstDone <- err
+			}()
+			<-started
+			secondDone := make(chan error, 1)
+			secondFinished := false
+			t.Cleanup(func() {
+				close(release)
+				if err := <-firstDone; err != nil {
+					t.Errorf("first request failed: %v", err)
+				}
+				if !secondFinished {
+					<-secondDone
+				}
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			observed := &observedDoneContext{Context: ctx, observed: make(chan struct{})}
+			if cancelBeforeRequest {
+				cancel()
+			}
+			go func() {
+				resp, err := client.Download(observed, "second", nil, "")
+				if resp != nil {
+					resp.Body.Close()
+				}
+				secondDone <- err
+			}()
+			if !cancelBeforeRequest {
+				select {
+				case <-observed.observed:
+				case <-time.After(time.Second):
+					t.Fatal("request did not observe cancellation while waiting for another refresh")
+				}
+			}
+			cancel()
+			select {
+			case err := <-secondDone:
+				secondFinished = true
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("error = %v, want context.Canceled", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("canceled request waited for another request's refresh")
+			}
+		})
+	}
+}
+
+type observedDoneContext struct {
+	context.Context
+	observed chan struct{}
+	once     sync.Once
+}
+
+func (c *observedDoneContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.Context.Done()
 }
 
 func TestTokenRefreshRejectsInvalidExpiry(t *testing.T) {

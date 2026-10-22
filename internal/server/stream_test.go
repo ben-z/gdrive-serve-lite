@@ -11,8 +11,13 @@ import (
 )
 
 func TestInterruptedDriveStreamsAbortResponse(t *testing.T) {
-	for _, target := range []string{"/file/file-1/video.mp4", "/export/doc-1/Notes?format=pdf"} {
-		t.Run(target, func(t *testing.T) {
+	for _, tt := range []struct{ base, target string }{
+		{"", "/file/file-1/video.mp4"},
+		{"", "/export/doc-1/Notes?format=pdf"},
+		{"/prefix", "/file/file-1/video.mp4"},
+		{"/prefix", "/export/doc-1/Notes?format=pdf"},
+	} {
+		t.Run(tt.base+tt.target, func(t *testing.T) {
 			body := &interruptedBody{reader: strings.NewReader(strings.Repeat("partial", 8192))}
 			app := testServer(func(req *http.Request) (*http.Response, error) {
 				if req.URL.Query().Get("fields") != "" {
@@ -21,10 +26,10 @@ func TestInterruptedDriveStreamsAbortResponse(t *testing.T) {
 				res := textResponse(http.StatusOK, "")
 				res.Body = body
 				return res, nil
-			})
+			}, Options{BaseURL: tt.base})
 			srv := httptest.NewServer(app.Handler())
 			defer srv.Close()
-			res, err := srv.Client().Get(srv.URL + target)
+			res, err := srv.Client().Get(srv.URL + tt.base + tt.target)
 			if err != nil {
 				t.Fatal(err)
 			}

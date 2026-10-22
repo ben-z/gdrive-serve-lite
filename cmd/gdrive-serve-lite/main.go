@@ -55,15 +55,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-	if *rootFolderID != "" {
-		cfg.RootFolderID = *rootFolderID
-	}
-	if *rootResourceKey != "" {
-		cfg.RootResourceKey = *rootResourceKey
-	}
-	if *driveID != "" {
-		cfg.DriveID = *driveID
-	}
+	cfg = applyRootOverrides(cfg, *rootFolderID, *driveID, *rootResourceKey)
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid config: %v", err)
 	}
@@ -101,6 +93,24 @@ func main() {
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func applyRootOverrides(cfg config.Config, folderID, driveID, resourceKey string) config.Config {
+	previousRoot := cfg.EffectiveRootFolderID()
+	if folderID != "" {
+		cfg.RootFolderID = folderID
+	}
+	if driveID != "" {
+		cfg.DriveID = driveID
+	}
+	// A resource key belongs to its folder ID, including an implicit drive root.
+	if cfg.EffectiveRootFolderID() != previousRoot {
+		cfg.RootResourceKey = ""
+	}
+	if resourceKey != "" {
+		cfg.RootResourceKey = resourceKey
+	}
+	return cfg
 }
 
 // splitRemotePath splits an rclone-style "remote:path" into the remote name

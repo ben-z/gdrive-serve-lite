@@ -30,7 +30,7 @@ go build ./cmd/gdrive-serve-lite
 
 The `--config` flag is optional and requires `--remote`. If omitted, the server checks `RCLONE_CONFIG`, then the usual rclone config locations. A selected config file must be readable and valid; errors stop startup. When `--remote` is provided, that explicit rclone remote is used even if `GDSL_*` environment variables are also present. Environment auth is used when no remote is requested.
 
-The `--remote` flag accepts either a Google Drive remote name or the familiar rclone `remote:path` form. Non-Drive rclone remotes are rejected at startup. The path portion is resolved once at startup and used as the served root. You can also pass `--root-path /path/from/drive/root`; `--root-folder-id` is the fastest and most precise root selector when you already know the Drive folder ID. Use `--root-resource-key` with `--root-folder-id` for a link-shared root folder that requires a Drive resource key.
+The `--remote` flag accepts either a Google Drive remote name or the familiar rclone `remote:path` form. Non-Drive rclone remotes are rejected at startup. The path portion is resolved once at startup and used as the served root. You can also pass `--root-path /path/from/drive/root`; `--root-folder-id` is the fastest and most precise root selector when you already know the Drive folder ID. Use `--root-resource-key` with `--root-folder-id` for a link-shared root folder that requires a Drive resource key. Changing the root folder or implicit shared-drive root clears its inherited resource key; supply the new root's key explicitly.
 
 Use `--drive-id` to target a shared drive. It scopes listing and search to that drive and, when no explicit root is given, serves the drive's root. It overrides the remote's `team_drive` setting and the `GDSL_DRIVE_ID` environment variable.
 
@@ -69,7 +69,7 @@ export GDSL_ROOT_RESOURCE_KEY='...' # optional link-shared root resource key
 ./gdrive-serve-lite --addr 127.0.0.1:8765
 ```
 
-For an existing access token, set `GDSL_ACCESS_TOKEN` and optionally `GDSL_TOKEN_EXPIRY` to its RFC 3339 expiry. An invalid expiry stops startup. Refresh tokens require `GDSL_CLIENT_ID`; access tokens alone are also supported.
+For an existing access token, set `GDSL_ACCESS_TOKEN` and optionally `GDSL_TOKEN_EXPIRY` to its RFC 3339 expiry. An invalid expiry stops startup. Refresh tokens require `GDSL_CLIENT_ID`; access tokens alone are also supported. Access tokens with a known expiry must still be valid unless a refresh token is configured.
 
 ## API
 
@@ -135,6 +135,8 @@ Folder paths can also return the same paginated JSON listing shape as `/api/list
 curl 'http://127.0.0.1:8765/?format=json&type=files&pageSize=1000&limit=1000'
 curl -H 'Accept: application/json' 'http://127.0.0.1:8765/Videos/Clips?type=files&pageSize=1000&limit=1000'
 ```
+
+JSON media ranges in `Accept` must have a positive quality value to select JSON. Malformed media ranges or quality values return HTTP 400; explicit JSON query options take precedence.
 
 `HEAD` on folder paths and `/browse/...` resolves the folder and returns the listing content type without fetching a Drive page.
 

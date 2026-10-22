@@ -41,7 +41,10 @@ func TestValidate(t *testing.T) {
 		{"no tokens", Config{}, "missing access token or refresh token"},
 		{"refresh without client id", Config{Token: OAuthToken{RefreshToken: "r"}}, "client ID is missing"},
 		{"access token only", Config{Token: OAuthToken{AccessToken: "a"}}, ""},
+		{"expired access token only", Config{Token: OAuthToken{AccessToken: "a", Expiry: time.Now().Add(-time.Hour)}}, "access token is expired"},
+		{"valid access token only", Config{Token: OAuthToken{AccessToken: "a", Expiry: time.Now().Add(time.Hour)}}, ""},
 		{"refresh with client id", Config{ClientID: "c", Token: OAuthToken{RefreshToken: "r"}}, ""},
+		{"expired refreshable token", Config{ClientID: "c", Token: OAuthToken{AccessToken: "a", RefreshToken: "r", Expiry: time.Now().Add(-time.Hour)}}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
