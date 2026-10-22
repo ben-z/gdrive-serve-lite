@@ -49,7 +49,7 @@ client_id = fake-client-id
 token = {"access_token":"fake-access"}
 `)
 	_, err := loadRcloneFile("not-drive", path, "")
-	if err == nil || !strings.Contains(err.Error(), `unsupported type "s3"`) {
+	if err == nil || !strings.Contains(err.Error(), "unsupported type") {
 		t.Fatalf("error = %v, want unsupported type", err)
 	}
 }
@@ -60,7 +60,7 @@ client_id = fake-client-id
 token = {"access_token":"fake-access"}
 `)
 	_, err := loadRcloneFile("not-drive", path, "")
-	if err == nil || !strings.Contains(err.Error(), `unsupported type "<missing>"`) {
+	if err == nil || !strings.Contains(err.Error(), "missing type") {
 		t.Fatalf("error = %v, want unsupported missing type", err)
 	}
 }

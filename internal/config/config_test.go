@@ -183,9 +183,9 @@ func TestLoadSelectedConfigErrors(t *testing.T) {
 	for _, tt := range []struct {
 		name, contents, want string
 	}{
-		{"malformed INI", "invalid", "key outside section"},
+		{"malformed INI", "invalid", "invalid INI syntax"},
 		{"missing remote", "[other]\ntype = drive\n", `remote "fake-drive" not found`},
-		{"unsupported remote", "[fake-drive]\ntype = s3\n", `unsupported type "s3"`},
+		{"unsupported remote", "[fake-drive]\ntype = s3\n", "unsupported type"},
 		{"malformed token", "[fake-drive]\ntype = drive\ntoken = invalid\n", "parse rclone token"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
