@@ -6,6 +6,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -67,7 +68,8 @@ func main() {
 	rootID, rootKey := cfg.EffectiveRootFolderID(), cfg.RootResourceKey
 	if p := cmp.Or(*rootPath, remoteRootPath); *rootFolderID == "" && p != "" && p != "/" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		item, err := client.ResolveItemPath(ctx, p, rootID, rootKey, "folder")
+		// CLI paths contain literal names; the resolver accepts URL-escaped segments.
+		item, err := client.ResolveItemPath(ctx, (&url.URL{Path: p}).EscapedPath(), rootID, rootKey, "folder")
 		cancel()
 		if err != nil {
 			log.Fatalf("resolve root path %q: %v", p, err)

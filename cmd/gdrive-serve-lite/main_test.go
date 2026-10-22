@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -142,5 +147,67 @@ func TestStartupRejectsInvalidOptions(t *testing.T) {
 				t.Fatalf("startup error = %v, output = %s; want %q", err, output, tt.want)
 			}
 		})
+	}
+}
+
+func TestStartupResolvesLiteralRootPaths(t *testing.T) {
+	const reachedDrive = "literal root path reached Drive"
+	if expected := os.Getenv("GDSL_TEST_LITERAL_ROOT"); expected != "" {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			query := req.URL.Query().Get("q")
+			if !strings.Contains(query, "name = '"+expected+"'") {
+				http.Error(w, "unexpected name query: "+query, http.StatusBadRequest)
+				return
+			}
+			// Stop startup after the real entry point has sent the correct lookup.
+			http.Error(w, reachedDrive, http.StatusTeapot)
+		}))
+		defer upstream.Close()
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = nil
+		transport.DialTLSContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+		}
+		http.DefaultTransport = transport
+		os.Args = append([]string{os.Args[0]}, os.Args[3:]...)
+		flag.CommandLine = flag.NewFlagSet("gdrive-serve-lite", flag.ExitOnError)
+		main()
+		return
+	}
+
+	for _, name := range []string{"GDSL_CLIENT_ID", "GDSL_CLIENT_SECRET", "GDSL_REFRESH_TOKEN", "GDSL_TOKEN_EXPIRY", "GDSL_DRIVE_ID", "GDSL_ROOT_RESOURCE_KEY"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("GDSL_ACCESS_TOKEN", "fixture-access")
+	t.Setenv("GDSL_ROOT_FOLDER_ID", "root")
+	configPath := filepath.Join(t.TempDir(), "rclone.conf")
+	if err := os.WriteFile(configPath, []byte("[fixture]\ntype = drive\ntoken = {\"access_token\":\"fixture-access\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"50% off", "literal%2Fname", "literal%252Fname", "question?and#fragment", "日本語", "name with spaces"} {
+		for _, source := range []string{"remote", "root path", "root path overrides remote"} {
+			t.Run(source+"/"+name, func(t *testing.T) {
+				// An invalid listen address also makes a skipped root lookup exit.
+				args := []string{"-test.run=^TestStartupResolvesLiteralRootPaths$", "--", "--addr=invalid"}
+				switch source {
+				case "remote":
+					args = append(args, "--config="+configPath, "--remote=fixture:/"+name)
+				case "root path":
+					args = append(args, "--root-path=/"+name)
+				case "root path overrides remote":
+					args = append(args, "--config="+configPath, "--remote=fixture:/ignored", "--root-path=/"+name)
+				}
+				command := exec.Command(executable, args...)
+				command.Env = append(os.Environ(), "GDSL_TEST_LITERAL_ROOT="+name)
+				output, err := command.CombinedOutput()
+				if err == nil || !strings.Contains(string(output), reachedDrive) {
+					t.Fatalf("startup error = %v, output = %s; want literal name lookup", err, output)
+				}
+			})
+		}
 	}
 }

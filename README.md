@@ -32,6 +32,8 @@ The `--config` flag is optional and requires `--remote`. If omitted, the server 
 
 The `--remote` flag accepts either a Google Drive remote name or the familiar rclone `remote:path` form. Non-Drive rclone remotes are rejected at startup. The path portion is resolved once at startup and used as the served root. You can also pass `--root-path /path/from/drive/root`; `--root-folder-id` is the fastest and most precise root selector when you already know the Drive folder ID. Use `--root-resource-key` with `--root-folder-id` for a link-shared root folder that requires a Drive resource key. Changing the root folder or implicit shared-drive root clears its inherited resource key; supply the new root's key explicitly.
 
+CLI root paths contain literal Drive names. For example, `--remote 'drive-ro:/50% off'` selects the folder named `50% off`; percent signs remain part of the name.
+
 Use `--drive-id` to target a shared drive. It scopes listing and search to that drive and, when no explicit root is given, serves the drive's root. It overrides the remote's `team_drive` setting and the `GDSL_DRIVE_ID` environment variable.
 
 If your rclone config is encrypted, provide `RCLONE_CONFIG_PASS` or use the environment variables below:
