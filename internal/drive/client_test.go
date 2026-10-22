@@ -1049,20 +1049,58 @@ func (c *observedDoneContext) Done() <-chan struct{} {
 }
 
 func TestTokenRefreshRejectsInvalidExpiry(t *testing.T) {
-	cfg := testConfig()
-	cfg.Token.AccessToken = ""
-	cfg.Token.RefreshToken = "refresh-token"
-	client := NewClient(cfg, &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			return jsonResponse(http.StatusOK, `{"access_token":"fresh-token","expires_in":0}`), nil
-		}),
-	})
-	_, err := client.GetFile(context.Background(), "clip", "")
-	if err == nil || !strings.Contains(err.Error(), "invalid expires_in") {
-		t.Fatalf("error = %v, want invalid expires_in", err)
+	for _, seconds := range []int64{-1, 0, 9223372037, 18446744074, 9223372036854775807} {
+		t.Run(fmt.Sprint(seconds), func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Token.AccessToken = ""
+			cfg.Token.RefreshToken = "refresh-token"
+			client := NewClient(cfg, &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					if req.URL.Host != "oauth2.googleapis.com" {
+						t.Fatalf("invalid token reached Drive: %s", req.URL)
+					}
+					return jsonResponse(http.StatusOK, fmt.Sprintf(`{"access_token":"fresh-token","expires_in":%d}`, seconds)), nil
+				}),
+			})
+			_, err := client.GetFile(context.Background(), "clip", "")
+			if err == nil || !strings.Contains(err.Error(), "invalid expires_in") {
+				t.Fatalf("error = %v, want invalid expires_in", err)
+			}
+			if client.token.AccessToken != "" || !client.token.Expiry.IsZero() {
+				t.Fatal("invalid refresh response replaced the token")
+			}
+		})
 	}
-	if client.token.AccessToken != "" {
-		t.Fatal("invalid refresh response replaced the access token")
+}
+
+func TestTokenRefreshAcceptsRepresentableExpiry(t *testing.T) {
+	for _, seconds := range []int64{3600, 9223372036} {
+		t.Run(fmt.Sprint(seconds), func(t *testing.T) {
+			refreshes := 0
+			cfg := testConfig()
+			cfg.Token.AccessToken = ""
+			cfg.Token.RefreshToken = "refresh-token"
+			client := NewClient(cfg, &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					if req.URL.Host == "oauth2.googleapis.com" {
+						refreshes++
+						return jsonResponse(http.StatusOK, fmt.Sprintf(`{"access_token":"fresh-token","expires_in":%d}`, seconds)), nil
+					}
+					if req.Header.Get("Authorization") != "Bearer fresh-token" {
+						t.Fatalf("Authorization = %q", req.Header.Get("Authorization"))
+					}
+					return jsonResponse(http.StatusOK, `{"id":"clip","name":"video.mp4"}`), nil
+				}),
+			})
+			for _, id := range []string{"clip-a", "clip-b"} {
+				if _, err := client.GetFile(context.Background(), id, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if refreshes != 1 || !client.token.Expiry.After(time.Now()) {
+				t.Fatalf("refreshes = %d, expiry = %s; want one refresh and a future expiry", refreshes, client.token.Expiry)
+			}
+		})
 	}
 }
 
