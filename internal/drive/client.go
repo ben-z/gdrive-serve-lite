@@ -530,11 +530,17 @@ func (c *Client) accessToken(ctx context.Context, rejectedToken string) (string,
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	res, err := c.httpClient.Do(req)
+	// Redirects must never replay the refresh token or client secret.
+	refreshClient := *c.httpClient
+	refreshClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	res, err := refreshClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK && res.StatusCode < 400 {
+		return "", fmt.Errorf("token refresh returned unexpected HTTP status %d", res.StatusCode)
+	}
 	if res.StatusCode >= 400 {
 		body, err := io.ReadAll(io.LimitReader(res.Body, 64*1024))
 		if err != nil {
