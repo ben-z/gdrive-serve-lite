@@ -310,7 +310,12 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodHead {
-		writeExportHead(w, r, *file, format, name)
+		meta, err := s.headSourceFile(r, *file)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeExportHead(w, r, meta, format, name)
 		return
 	}
 	s.streamExport(w, r, *file, format, name, r.URL.Query().Get("resourceKey"))
@@ -378,18 +383,42 @@ func (s *Server) serveResolvedFile(w http.ResponseWriter, r *http.Request, file 
 			return
 		}
 		if r.Method == http.MethodHead {
-			writeExportHead(w, r, file, format, file.Name)
+			meta, err := s.headSourceFile(r, file)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			writeExportHead(w, r, meta, format, file.Name)
 			return
 		}
 		s.streamExport(w, r, file, format, file.Name, "")
 		return
 	}
 	if r.Method == http.MethodHead {
-		writeFileHead(w, r, file, file.Name)
+		meta, err := s.headSourceFile(r, file)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeFileHead(w, r, meta, file.Name)
 		return
 	}
 	id, resourceKey := file.TargetIDAndKey()
 	s.proxyDownload(w, r, id, resourceKey, file.Name)
+}
+
+// HEAD describes a shortcut's target while retaining the alias download name.
+func (s *Server) headSourceFile(r *http.Request, file drive.File) (drive.File, error) {
+	id, resourceKey := file.TargetIDAndKey()
+	if id == file.ID {
+		return file, nil
+	}
+	target, err := s.drive.GetFile(r.Context(), id, resourceKey)
+	if err != nil {
+		return drive.File{}, err
+	}
+	target.Name = file.Name
+	return *target, nil
 }
 
 func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p folderPath, folder folderRef) {

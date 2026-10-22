@@ -155,6 +155,8 @@ If Drive interrupts a download or export, the server aborts the response so clie
 
 If Drive returns a `resourceKey` or `shortcutDetails.targetResourceKey` in metadata, path-based reads, multi-segment path resolution, and generated browser links automatically pass it through on the upstream Drive request. ID-based endpoints accept `resourceKey=...` explicitly.
 
+For shortcut path reads and exports, `HEAD` describes the target's metadata while retaining the shortcut's download name.
+
 Export a Google Docs/Sheets/Slides file:
 
 ```text
