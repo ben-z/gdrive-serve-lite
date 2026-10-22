@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -165,7 +166,7 @@ func TestAPIListIncludesReadyEntryURLs(t *testing.T) {
 	want := map[string]string{
 		"Shared":          "/browse?folderId=folder-1&resourceKey=folder-key-1",
 		"100%/done.mp4":   "/file/file-1/100%25%2Fdone.mp4?resourceKey=file-key-1",
-		"Notes":           "/export/doc-1/Notes.docx?resourceKey=doc-key-1",
+		"Notes":           "/export/doc-1/Notes?resourceKey=doc-key-1",
 		"shortcut.mp4":    "/file/file-2/shortcut.mp4?resourceKey=target-key-1",
 		"folder shortcut": "/browse?folderId=folder-2&resourceKey=folder-target-key",
 	}
@@ -199,6 +200,205 @@ func TestAPIListOmitsReadyEntryURLsByDefault(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), `"url"`) {
 		t.Fatalf("body should not include url by default: %s", rec.Body.String())
+	}
+}
+
+func TestGeneratedExportLinkUsesSelectedFormatFilename(t *testing.T) {
+	for _, shortcut := range []bool{false, true} {
+		for _, name := range []string{"Alias", "Report 100%/final.docx", ".", ".."} {
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				t.Run(fmt.Sprintf("shortcut=%t/%s/%s", shortcut, name, method), func(t *testing.T) {
+					file := drive.File{ID: "target", Name: name, MIMEType: "application/vnd.google-apps.document", ResourceKey: "target-key"}
+					if shortcut {
+						file.ID = "shortcut"
+						file.MIMEType = "application/vnd.google-apps.shortcut"
+						file.ResourceKey = "shortcut-key"
+						file.ShortcutDetails = &drive.ShortcutDetails{TargetID: "target", TargetMIMEType: "application/vnd.google-apps.document", TargetResourceKey: "target-key"}
+					}
+					listing, err := json.Marshal(map[string][]drive.File{"files": {file}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					var metadataCalls, exportCalls int
+					app := testServer(func(req *http.Request) (*http.Response, error) {
+						if req.URL.Path == "/drive/v3/files" {
+							return jsonResponse(http.StatusOK, string(listing)), nil
+						}
+						if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "target/target-key" {
+							t.Fatalf("resource key header = %q", got)
+						}
+						switch req.URL.Path {
+						case "/drive/v3/files/target":
+							metadataCalls++
+							return jsonResponse(http.StatusOK, `{"id":"target","name":"Original","mimeType":"application/vnd.google-apps.document","exportLinks":{"application/pdf":"https://example.invalid/pdf"}}`), nil
+						case "/drive/v3/files/target/export":
+							exportCalls++
+							if got := req.URL.Query().Get("mimeType"); got != "application/pdf" {
+								t.Fatalf("export MIME type = %q", got)
+							}
+							resp := textResponse(http.StatusOK, "%PDF")
+							resp.Header.Set("Content-Type", "application/pdf")
+							return resp, nil
+						default:
+							t.Fatalf("unexpected request %s", req.URL.String())
+							return nil, nil
+						}
+					})
+					listed := httptest.NewRecorder()
+					app.Handler().ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/api/list?links=1", nil))
+					if listed.Code != http.StatusOK {
+						t.Fatalf("list status = %d body=%s", listed.Code, listed.Body.String())
+					}
+					var body ListResponse
+					if err := json.Unmarshal(listed.Body.Bytes(), &body); err != nil {
+						t.Fatal(err)
+					}
+					if len(body.Files) != 1 {
+						t.Fatalf("files = %d, want 1", len(body.Files))
+					}
+					link := body.Files[0].URL
+					rec := httptest.NewRecorder()
+					app.Handler().ServeHTTP(rec, httptest.NewRequest(method, link, nil))
+					if rec.Code != http.StatusOK {
+						t.Fatalf("export status = %d body=%s", rec.Code, rec.Body.String())
+					}
+					if got := rec.Header().Get("Content-Type"); got != "application/pdf" {
+						t.Fatalf("Content-Type = %q", got)
+					}
+					if got, want := rec.Header().Get("Content-Disposition"), "inline; filename*=UTF-8''"+url.PathEscape(name+".pdf"); got != want {
+						t.Fatalf("generated link %q: Content-Disposition = %q, want %q", link, got, want)
+					}
+					wantLink := "/export/target/" + url.PathEscape(name) + "?resourceKey=target-key"
+					if name == "." || name == ".." {
+						wantLink = "/export/target?name=" + url.QueryEscape(name) + "&resourceKey=target-key"
+					}
+					if link != wantLink {
+						t.Fatalf("generated link = %q, want %q", link, wantLink)
+					}
+					wantBody, wantExports := "%PDF", 1
+					if method == http.MethodHead {
+						wantBody, wantExports = "", 0
+					}
+					if rec.Body.String() != wantBody || metadataCalls != 1 || exportCalls != wantExports {
+						t.Fatalf("body = %q, metadata calls = %d, export calls = %d; want %q, 1, %d", rec.Body.String(), metadataCalls, exportCalls, wantBody, wantExports)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestGeneratedDotBlobLinksPreserveNamesAndTargets(t *testing.T) {
+	for _, shortcut := range []bool{false, true} {
+		for _, name := range []string{".", ".."} {
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				t.Run(fmt.Sprintf("shortcut=%t/%s/%s", shortcut, name, method), func(t *testing.T) {
+					file := drive.File{ID: "target", Name: name, MIMEType: "text/plain", ResourceKey: "target-key"}
+					if shortcut {
+						file.ID = "shortcut"
+						file.MIMEType = "application/vnd.google-apps.shortcut"
+						file.ShortcutDetails = &drive.ShortcutDetails{TargetID: "target", TargetMIMEType: "text/plain", TargetResourceKey: "target-key"}
+					}
+					listing, err := json.Marshal(map[string][]drive.File{"files": {file}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					var reads int
+					app := testServer(func(req *http.Request) (*http.Response, error) {
+						if req.URL.Path == "/drive/v3/files" {
+							return jsonResponse(http.StatusOK, string(listing)), nil
+						}
+						if req.URL.Path != "/drive/v3/files/target" || req.Header.Get("X-Goog-Drive-Resource-Keys") != "target/target-key" {
+							t.Fatalf("unexpected target request %s headers=%v", req.URL, req.Header)
+						}
+						reads++
+						if req.URL.Query().Get("alt") == "media" {
+							if method == http.MethodHead {
+								t.Fatal("HEAD fetched blob body")
+							}
+							return textResponse(http.StatusOK, "blob"), nil
+						}
+						return jsonResponse(http.StatusOK, `{"id":"target","name":"Original","mimeType":"text/plain","size":"4"}`), nil
+					}, Options{BaseURL: "/prefix"})
+					listed := httptest.NewRecorder()
+					app.Handler().ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/prefix/api/list?links=1", nil))
+					var body ListResponse
+					if err := json.Unmarshal(listed.Body.Bytes(), &body); err != nil {
+						t.Fatal(err)
+					}
+					if listed.Code != http.StatusOK || len(body.Files) != 1 {
+						t.Fatalf("list status = %d body=%s", listed.Code, listed.Body.String())
+					}
+					link := body.Files[0].URL
+					rec := httptest.NewRecorder()
+					app.Handler().ServeHTTP(rec, httptest.NewRequest(method, link, nil))
+					if rec.Code != http.StatusOK || reads != 1 {
+						t.Fatalf("generated link %q: status = %d, reads = %d, body=%s", link, rec.Code, reads, rec.Body.String())
+					}
+					if got, want := rec.Header().Get("Content-Disposition"), "inline; filename*=UTF-8''"+name; got != want {
+						t.Fatalf("Content-Disposition = %q, want %q", got, want)
+					}
+					if want := "/prefix/file/target?name=" + name + "&resourceKey=target-key"; link != want {
+						t.Fatalf("generated link = %q, want %q", link, want)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestIDAndNameQueryAppliesOnlyWithoutPathName(t *testing.T) {
+	for _, prefix := range []string{"/file/", "/export/"} {
+		for _, tc := range []struct{ path, name string }{
+			{"id?name=..", ".."},
+			{"id/?name=.", "."},
+			{"id/Named%2Ffile?name=..", "Named/file"},
+		} {
+			t.Run(prefix+tc.path, func(t *testing.T) {
+				id, name, ok, err := idAndNameFromEscapedPath(httptest.NewRequest(http.MethodGet, prefix+tc.path, nil), prefix)
+				if id != "id" || name != tc.name || !ok || err != nil {
+					t.Fatalf("id = %q, name = %q, ok = %t, err = %v", id, name, ok, err)
+				}
+			})
+		}
+	}
+}
+
+func TestRootDotFolderLinksUseFolderID(t *testing.T) {
+	for _, name := range []string{".", ".."} {
+		t.Run(name, func(t *testing.T) {
+			var childReads int
+			app := testServer(func(req *http.Request) (*http.Response, error) {
+				query := req.URL.Query().Get("q")
+				if strings.Contains(query, "'root-folder' in parents") {
+					return jsonResponse(http.StatusOK, fmt.Sprintf(`{"files":[{"id":"child","name":%q,"mimeType":"application/vnd.google-apps.folder","resourceKey":"child-key"}]}`, name)), nil
+				}
+				if !strings.Contains(query, "'child' in parents") || req.Header.Get("X-Goog-Drive-Resource-Keys") != "child/child-key" {
+					t.Fatalf("unexpected child request %s headers=%v", req.URL, req.Header)
+				}
+				childReads++
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"marker","name":"child marker","mimeType":"text/plain"}]}`), nil
+			}, Options{BaseURL: "/prefix"})
+			root := httptest.NewRecorder()
+			app.Handler().ServeHTTP(root, httptest.NewRequest(http.MethodGet, "/prefix/", nil))
+			_, after, ok := strings.Cut(root.Body.String(), `<a href="`)
+			if root.Code != http.StatusOK || !ok {
+				t.Fatalf("root status = %d body=%s", root.Code, root.Body.String())
+			}
+			rawLink, _, ok := strings.Cut(after, `"`)
+			if !ok {
+				t.Fatal("unterminated folder link")
+			}
+			link := html.UnescapeString(rawLink)
+			child := httptest.NewRecorder()
+			app.Handler().ServeHTTP(child, httptest.NewRequest(http.MethodGet, link, nil))
+			if child.Code != http.StatusOK || childReads != 1 || !strings.Contains(child.Body.String(), "child marker") {
+				t.Fatalf("generated link %q: status = %d, child reads = %d, body=%s", link, child.Code, childReads, child.Body.String())
+			}
+			if link != "/prefix/browse?folderId=child&resourceKey=child-key" {
+				t.Fatalf("generated link = %q", link)
+			}
+		})
 	}
 }
 
@@ -595,7 +795,7 @@ func TestRootPathHTMLLinksPreserveResourceKeysAndShortcutTargets(t *testing.T) {
 		"/browse/Shared?folderId=folder-1&amp;resourceKey=folder-key-1",
 		"/browse/A%2FB%3FC?folderId=folder-2",
 		"/file/file-1/video.mp4?resourceKey=file-key-1",
-		"/export/doc-1/Notes.docx?resourceKey=doc-key-1",
+		"/export/doc-1/Notes?resourceKey=doc-key-1",
 		"/file/file-2/shortcut.mp4?resourceKey=target-key-1",
 	} {
 		if !strings.Contains(body, want) {
