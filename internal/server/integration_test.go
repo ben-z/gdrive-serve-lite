@@ -388,7 +388,7 @@ func TestIntegrationResolveBrowseAndTypeFilters(t *testing.T) {
 	if !strings.Contains(res.Header.Get("Content-Type"), "text/html") {
 		t.Fatalf("browse Content-Type = %q", res.Header.Get("Content-Type"))
 	}
-	if !strings.Contains(string(html), "/export/doc-notes/Notes.docx") {
+	if !strings.Contains(string(html), "/export/doc-notes/Notes") {
 		t.Fatalf("browse HTML missing export link:\n%s", html)
 	}
 }

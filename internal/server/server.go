@@ -560,8 +560,13 @@ func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p folderPa
 	for _, f := range list.Files {
 		name := html.EscapeString(f.Name)
 		if f.IsFolder() {
-			childID, childResourceKey := f.TargetIDAndKey()
-			link := withResourceKey(s.link("/browse"+urlEscapedPathAppend(p.Escaped, f.Name)+"?folderId="+url.QueryEscape(childID)), childResourceKey)
+			var link string
+			if f.Name == "." || f.Name == ".." {
+				link = s.entryURL(f)
+			} else {
+				childID, childResourceKey := f.TargetIDAndKey()
+				link = withResourceKey(s.link("/browse"+urlEscapedPathAppend(p.Escaped, f.Name)+"?folderId="+url.QueryEscape(childID)), childResourceKey)
+			}
 			fmt.Fprintf(w, "<tr><td><a href=\"%s\">%s/</a></td><td>folder</td><td></td><td>%s</td></tr>", html.EscapeString(link), name, html.EscapeString(f.ModifiedTime))
 			continue
 		}
@@ -748,6 +753,9 @@ func idAndNameFromEscapedPath(r *http.Request, prefix string) (id, name string, 
 	if err != nil {
 		name = ""
 	}
+	if rawName == "" {
+		name = r.URL.Query().Get("name")
+	}
 	return id, name, true, nil
 }
 
@@ -842,9 +850,16 @@ func (s *Server) entryURL(file drive.File) string {
 // when the file has a default export format, the blob route otherwise.
 func (s *Server) fileLink(file drive.File) string {
 	id, resourceKey := file.TargetIDAndKey()
-	link := s.link("/file/" + url.PathEscape(id) + "/" + url.PathEscape(file.Name))
-	if format, ok := defaultExportForResponse(file); ok {
-		link = s.link("/export/" + url.PathEscape(id) + "/" + url.PathEscape(exportName(file.Name, format)))
+	route := "/file/"
+	if _, ok := defaultExportForResponse(file); ok {
+		route = "/export/"
+	}
+	link := s.link(route + url.PathEscape(id))
+	if file.Name == "." || file.Name == ".." {
+		// Browsers normalize even percent-encoded dot segments in URL paths.
+		link += "?name=" + url.QueryEscape(file.Name)
+	} else {
+		link += "/" + url.PathEscape(file.Name)
 	}
 	return withResourceKey(link, resourceKey)
 }
