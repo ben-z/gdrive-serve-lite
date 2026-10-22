@@ -15,7 +15,6 @@ const (
 	presentationMIME        = "application/vnd.google-apps.presentation"
 	drawingMIME             = "application/vnd.google-apps.drawing"
 	appsScriptMIME          = "application/vnd.google-apps.script"
-	googleVidsMIME          = "application/vnd.google-apps.vid"
 	openXMLDocumentMIME     = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 	openXMLSpreadsheetMIME  = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 	openXMLPresentationMIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -40,7 +39,7 @@ var exportFormatsByName = map[string]ExportFormat{
 	"md":   {Format: "md", MIMEType: "text/markdown", Extension: "md"},
 
 	"xlsx": {Format: "xlsx", MIMEType: openXMLSpreadsheetMIME, Extension: "xlsx"},
-	"ods":  {Format: "ods", MIMEType: "application/x-vnd.oasis.opendocument.spreadsheet", Extension: "ods"},
+	"ods":  {Format: "ods", MIMEType: "application/vnd.oasis.opendocument.spreadsheet", Extension: "ods"},
 	"csv":  {Format: "csv", MIMEType: "text/csv", Extension: "csv"},
 	"tsv":  {Format: "tsv", MIMEType: "text/tab-separated-values", Extension: "tsv"},
 
@@ -60,7 +59,6 @@ var sourceExportFormats = map[string][]string{
 	presentationMIME: {"pptx", "pdf", "odp", "txt", "jpg", "png", "svg"},
 	drawingMIME:      {"svg", "pdf", "jpg", "png"},
 	appsScriptMIME:   {"json"},
-	googleVidsMIME:   {"mp4"},
 }
 
 var exportPriority = map[string]int{
