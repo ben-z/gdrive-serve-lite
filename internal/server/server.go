@@ -1170,5 +1170,6 @@ func contentDisposition(name string) string {
 	if name == "" {
 		return "inline"
 	}
-	return "inline; filename*=UTF-8''" + url.PathEscape(name)
+	// Extended filename parameters require percent-encoded spaces, not query '+'.
+	return "inline; filename*=UTF-8''" + strings.ReplaceAll(url.QueryEscape(name), "+", "%20")
 }
