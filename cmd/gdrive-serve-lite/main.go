@@ -116,10 +116,11 @@ func applyRootOverrides(cfg config.Config, folderID, driveID, resourceKey string
 }
 
 // splitRemotePath splits an rclone-style "remote:path" into the remote name
-// and a cleaned, slash-prefixed root path.
+// and a cleaned, slash-prefixed root path. Whitespace in path names is significant.
 func splitRemotePath(remote string) (name, root string) {
-	name, root, ok := strings.Cut(strings.TrimSpace(remote), ":")
-	if root = strings.TrimSpace(root); !ok || root == "" {
+	name, root, ok := strings.Cut(remote, ":")
+	name = strings.TrimSpace(name)
+	if !ok || root == "" {
 		return name, ""
 	}
 	return name, path.Clean("/" + root)

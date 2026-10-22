@@ -94,13 +94,25 @@ func TestSplitRemotePath(t *testing.T) {
 		rootPath string
 	}{
 		{"gdrive-ro", "gdrive-ro", ""},
+		{" gdrive-ro ", "gdrive-ro", ""},
 		{"gdrive-ro:", "gdrive-ro", ""},
+		{" gdrive-ro :", "gdrive-ro", ""},
 		{"gdrive-ro:/", "gdrive-ro", "/"},
 		{"gdrive-ro:folder", "gdrive-ro", "/folder"},
 		{"gdrive-ro:/folder//child/", "gdrive-ro", "/folder/child"},
 		{"gdrive-ro:/Videos/Clips", "gdrive-ro", "/Videos/Clips"},
 		{"gdrive-ro:Videos/Clips", "gdrive-ro", "/Videos/Clips"},
-		{" gdrive-ro:/Videos//Clips/ ", "gdrive-ro", "/Videos/Clips"},
+		{" gdrive-ro :/Videos//Clips/", "gdrive-ro", "/Videos/Clips"},
+		{"gdrive-ro:/Videos//Clips/ ", "gdrive-ro", "/Videos/Clips/ "},
+		{"gdrive-ro: leading", "gdrive-ro", "/ leading"},
+		{"gdrive-ro:/ leading", "gdrive-ro", "/ leading"},
+		{"gdrive-ro:trailing ", "gdrive-ro", "/trailing "},
+		{"gdrive-ro:/trailing ", "gdrive-ro", "/trailing "},
+		{"gdrive-ro: padded ", "gdrive-ro", "/ padded "},
+		{"gdrive-ro:/ padded ", "gdrive-ro", "/ padded "},
+		{"gdrive-ro:   ", "gdrive-ro", "/   "},
+		{"gdrive-ro:/   ", "gdrive-ro", "/   "},
+		{"gdrive-ro:/parent / child /", "gdrive-ro", "/parent / child "},
 	}
 	for _, tt := range tests {
 		remote, rootPath := splitRemotePath(tt.in)
@@ -188,14 +200,16 @@ func TestStartupResolvesLiteralRootPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"50% off", "literal%2Fname", "literal%252Fname", "question?and#fragment", "日本語", "name with spaces"} {
-		for _, source := range []string{"remote", "root path", "root path overrides remote"} {
+	for _, name := range []string{"50% off", "literal%2Fname", "literal%252Fname", "question?and#fragment", "日本語", "name with spaces", " leading", "trailing ", " padded ", "   "} {
+		for _, source := range []string{"absolute remote", "relative remote", "root path", "root path overrides remote"} {
 			t.Run(source+"/"+name, func(t *testing.T) {
 				// An invalid listen address also makes a skipped root lookup exit.
 				args := []string{"-test.run=^TestStartupResolvesLiteralRootPaths$", "--", "--addr=invalid"}
 				switch source {
-				case "remote":
+				case "absolute remote":
 					args = append(args, "--config="+configPath, "--remote=fixture:/"+name)
+				case "relative remote":
+					args = append(args, "--config="+configPath, "--remote=fixture:"+name)
 				case "root path":
 					args = append(args, "--root-path=/"+name)
 				case "root path overrides remote":
