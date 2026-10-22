@@ -401,6 +401,9 @@ func (c *Client) findItemsByName(ctx context.Context, parentID, parentResourceKe
 		return nil, fmt.Errorf("Drive returned incomplete search for name %q under %q", name, parentID)
 	}
 	if len(files) == 1 {
+		if files[0].ID == "" {
+			return nil, errors.New("decode Drive response: missing file ID")
+		}
 		c.lookups.put(cacheKey, files)
 	}
 	return files, nil

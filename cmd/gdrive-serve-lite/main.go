@@ -32,6 +32,9 @@ func main() {
 	allowOrigin := flag.String("allow-origin", "", "optional CORS origin to allow, for example http://localhost:3000 or *")
 	baseURL := flag.String("baseurl", "", "optional URL path prefix to serve from, for example /gdrive")
 	flag.Parse()
+	if flag.NArg() != 0 {
+		log.Fatal("unexpected positional arguments")
+	}
 	if (*httpUser == "") != (*httpPass == "") {
 		log.Fatal("--user and --pass must be set together")
 	}
