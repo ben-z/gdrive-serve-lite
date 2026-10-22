@@ -560,7 +560,11 @@ func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p folderPa
 	fmt.Fprint(w, "<style>body{font:14px system-ui,sans-serif;margin:24px;max-width:1100px}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}a{text-decoration:none}code{background:#f5f5f5;padding:2px 4px}</style>")
 	fmt.Fprintf(w, "<h1>%s</h1><p><code>%s</code></p>", html.EscapeString(p.Display), html.EscapeString(folder.ID))
 	fmt.Fprint(w, "<table><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Modified</th></tr></thead><tbody>")
-	if p.Escaped != "/" {
+	// Query-selected folders can have decorative paths with unrelated parents.
+	query := r.URL.Query()
+	browseRequest := r.Pattern == "GET /browse" || r.Pattern == "GET /browse/"
+	querySelectedFolder := browseRequest && (query.Get("folderId") != "" || query.Get("path") != "")
+	if p.Escaped != "/" && !querySelectedFolder {
 		parent := path.Dir(strings.TrimRight(p.Escaped, "/"))
 		if parent == "." {
 			parent = "/"
