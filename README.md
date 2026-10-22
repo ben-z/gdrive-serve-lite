@@ -157,6 +157,8 @@ http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4?resourceKey=RESOURCE_KEY
 
 If Drive interrupts a download or export, the server aborts the response so clients can detect the incomplete transfer.
 
+Scripts and XSLT are disabled in HTML and SVG previews.
+
 File and export URLs accept `name=...` as the optional filename when the path has no filename. Generated links use this form for dot-only names so browser path normalization preserves the file ID.
 
 File and export `HEAD` responses use known modification times to evaluate date preconditions. A stale `If-Unmodified-Since` returns `412 Precondition Failed` before checking `If-Modified-Since`. Requests containing `If-Match` skip the `If-Unmodified-Since` check. Metadata-based `HEAD` responses do not evaluate ETag preconditions, and export `GET` requests do not forward conditional request headers to Drive.
