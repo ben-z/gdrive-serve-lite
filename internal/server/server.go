@@ -226,16 +226,17 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
+	opts, err := listOptions(r)
+	if err != nil {
+		badRequest(w, err.Error())
+		return
+	}
 	folder, err := s.folderFromRequest(r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	opts, err := listOptions(r, folder)
-	if err != nil {
-		badRequest(w, err.Error())
-		return
-	}
+	opts.FolderID, opts.ResourceKey = folder.ID, folder.ResourceKey
 	list, err := s.drive.ListChildren(r.Context(), opts)
 	if err != nil {
 		writeError(w, err)
@@ -443,11 +444,12 @@ func (s *Server) serveFolderPath(w http.ResponseWriter, r *http.Request, p folde
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	opts, err := listOptions(r, folder)
+	opts, err := listOptions(r)
 	if err != nil {
 		badRequest(w, err.Error())
 		return
 	}
+	opts.FolderID, opts.ResourceKey = folder.ID, folder.ResourceKey
 	list, err := s.drive.ListChildren(r.Context(), opts)
 	if err != nil {
 		writeError(w, err)
@@ -529,7 +531,7 @@ func (s *Server) resolveItemPath(r *http.Request, p, itemType string) (*drive.Re
 	return s.drive.ResolveItemPath(r.Context(), p, s.root.ID, s.root.ResourceKey, itemType)
 }
 
-func listOptions(r *http.Request, folder folderRef) (drive.ListOptions, error) {
+func listOptions(r *http.Request) (drive.ListOptions, error) {
 	query := r.URL.Query()
 	pageSize, err := intParam(query, "pageSize")
 	if err != nil {
@@ -539,14 +541,16 @@ func listOptions(r *http.Request, folder folderRef) (drive.ListOptions, error) {
 	if err != nil {
 		return drive.ListOptions{}, err
 	}
+	// Preserve the input: the canonical default "any" is not an accepted list type.
+	if _, err := drive.NormalizeListType(query.Get("type")); err != nil {
+		return drive.ListOptions{}, err
+	}
 	return drive.ListOptions{
-		FolderID:    folder.ID,
-		ResourceKey: folder.ResourceKey,
-		PageSize:    pageSize,
-		Limit:       limit,
-		PageToken:   query.Get("pageToken"),
-		OrderBy:     query.Get("orderBy"),
-		Type:        query.Get("type"),
+		PageSize:  pageSize,
+		Limit:     limit,
+		PageToken: query.Get("pageToken"),
+		OrderBy:   query.Get("orderBy"),
+		Type:      query.Get("type"),
 	}, nil
 }
 

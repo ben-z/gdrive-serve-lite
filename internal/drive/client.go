@@ -182,7 +182,7 @@ func (c *Client) ListChildren(ctx context.Context, opts ListOptions) (*FileList,
 	if opts.FolderID == "" {
 		return nil, errors.New("folder ID is required")
 	}
-	listType, err := normalizeListType(opts.Type)
+	listType, err := NormalizeListType(opts.Type)
 	if err != nil {
 		return nil, err
 	}
@@ -683,9 +683,9 @@ func normalizeItemType(s string) (string, error) {
 	}
 }
 
-// normalizeListType accepts the same aliases as normalizeItemType except an
-// explicit "any", which list requests have always rejected.
-func normalizeListType(s string) (string, error) {
+// NormalizeListType maps list type aliases to "any", "file", or "folder".
+// Empty input and "all" select "any"; an explicit "any" is rejected.
+func NormalizeListType(s string) (string, error) {
 	t, err := normalizeItemType(s)
 	if err != nil || strings.EqualFold(strings.TrimSpace(s), "any") {
 		return "", &BadRequestError{msg: fmt.Sprintf("invalid list type %q", s)}
