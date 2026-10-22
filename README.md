@@ -113,6 +113,8 @@ curl 'http://127.0.0.1:8765/api/resolve?path=/Videos/Clips/clip.mp4&type=file'
 
 `type` can be `folder`, `file`, or `any`. The default is `folder` for compatibility with folder listing and browsing.
 
+`path` preserves leading and trailing spaces in Drive names. URL-escape each path segment, then encode the path as a query parameter.
+
 Fetch file metadata:
 
 ```sh
