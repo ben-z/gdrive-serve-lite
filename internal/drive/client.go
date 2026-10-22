@@ -258,21 +258,22 @@ func (c *Client) ResolveItemPath(ctx context.Context, p, rootFolderID, rootResou
 		return nil, err
 	}
 	parts := strings.Split(strings.Trim(p, "/"), "/")
-	parent, parentResourceKey := rootFolderID, rootResourceKey
-	resolvedParent := ""
 	cleanParts := make([]string, 0, len(parts))
-	var resolved File
-	for i, raw := range parts {
+	for _, raw := range parts {
 		segment, err := url.PathUnescape(raw)
 		if err != nil {
-			return nil, err
+			return nil, &BadRequestError{msg: err.Error()}
 		}
-		if segment == "" {
-			continue
+		if segment != "" {
+			cleanParts = append(cleanParts, segment)
 		}
-		cleanParts = append(cleanParts, segment)
+	}
+	parent, parentResourceKey := rootFolderID, rootResourceKey
+	resolvedParent := ""
+	var resolved File
+	for i, segment := range cleanParts {
 		leafType := "folder"
-		if i == len(parts)-1 {
+		if i == len(cleanParts)-1 {
 			leafType = itemType
 		}
 		matches, err := c.findItemsByName(ctx, parent, parentResourceKey, segment, leafType)
