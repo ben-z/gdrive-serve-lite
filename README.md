@@ -28,7 +28,7 @@ go build ./cmd/gdrive-serve-lite
 ./gdrive-serve-lite --remote drive-ro:/Videos --addr 127.0.0.1:8765
 ```
 
-The `--config` flag is optional and requires `--remote`. If omitted, the server checks `RCLONE_CONFIG`, then the usual rclone config locations. A selected config file must be readable and valid; errors stop startup. When `--remote` is provided, that explicit rclone remote is used even if `GDSL_*` environment variables are also present. Environment auth is used when no remote is requested.
+The `--config` flag is optional and requires `--remote`. If omitted, the server checks `RCLONE_CONFIG`, then the usual rclone config locations. A selected config file must be readable and valid; errors stop startup. When `--remote` is provided, that explicit rclone remote is used even if `GDSL_*` environment variables are also present. Environment auth is used when no remote is requested. The remote's stored `resource_key` is used for its root.
 
 The `--remote` flag accepts either a Google Drive remote name or the familiar rclone `remote:path` form. Non-Drive rclone remotes are rejected at startup. The path portion is resolved once at startup and used as the served root. You can also pass `--root-path /path/from/drive/root`; `--root-folder-id` is the fastest and most precise root selector when you already know the Drive folder ID. Use `--root-resource-key` with `--root-folder-id` for a link-shared root folder that requires a Drive resource key. Changing the root folder or implicit shared-drive root clears its inherited resource key; supply the new root's key explicitly.
 

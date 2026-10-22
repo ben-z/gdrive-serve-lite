@@ -101,12 +101,13 @@ func configFromRcloneEntry(remote string, entry map[string]string) (Config, erro
 		}
 	}
 	return Config{
-		ClientID:     entry["client_id"],
-		ClientSecret: entry["client_secret"],
-		Token:        token,
-		DriveID:      entry["team_drive"],
-		RootFolderID: entry["root_folder_id"],
-		Source:       "rclone:" + remote,
+		ClientID:        entry["client_id"],
+		ClientSecret:    entry["client_secret"],
+		Token:           token,
+		DriveID:         entry["team_drive"],
+		RootFolderID:    entry["root_folder_id"],
+		RootResourceKey: entry["resource_key"],
+		Source:          "rclone:" + remote,
 	}, nil
 }
 
