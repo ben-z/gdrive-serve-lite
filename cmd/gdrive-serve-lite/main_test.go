@@ -167,9 +167,12 @@ func TestStartupRejectsInvalidOptions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			args := append([]string{"-test.run=^TestStartupRejectsInvalidOptions$", "--"}, tt.args...)
 			command := exec.Command(executable, args...)
-			command.Env = append(os.Environ(), "GDSL_TEST_MAIN=1")
+			// The expected nonzero log.Fatal exit bypasses race finalization, so
+			// detected child races must halt immediately.
+			command.Env = append(os.Environ(), "GDSL_TEST_MAIN=1", "GORACE=halt_on_error=1")
 			output, err := command.CombinedOutput()
-			if err == nil || !strings.Contains(string(output), tt.want) {
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != 1 || !strings.Contains(string(output), tt.want) {
 				t.Fatalf("startup error = %v, output = %s; want %q", err, output, tt.want)
 			}
 			if strings.Contains(string(output), argumentSecret) {
@@ -244,9 +247,10 @@ func TestStartupResolvesLiteralRootPaths(t *testing.T) {
 					args = append(args, "--config="+configPath, "--remote=fixture:/ignored", "--root-path=/"+name)
 				}
 				command := exec.Command(executable, args...)
-				command.Env = append(os.Environ(), "GDSL_TEST_LITERAL_ROOT="+name)
+				command.Env = append(os.Environ(), "GDSL_TEST_LITERAL_ROOT="+name, "GORACE=halt_on_error=1")
 				output, err := command.CombinedOutput()
-				if err == nil || !strings.Contains(string(output), reachedDrive) {
+				exitErr, ok := err.(*exec.ExitError)
+				if !ok || exitErr.ExitCode() != 1 || !strings.Contains(string(output), reachedDrive) {
 					t.Fatalf("startup error = %v, output = %s; want literal name lookup", err, output)
 				}
 			})
