@@ -570,6 +570,7 @@ func (s *Server) renderBrowse(w http.ResponseWriter, r *http.Request, p folderPa
 	fmt.Fprint(w, "</tbody></table>")
 	if list.NextPageToken != "" {
 		q := r.URL.Query()
+		q.Del("resourceKey")
 		q.Set("pageToken", list.NextPageToken)
 		q.Set("folderId", folder.ID)
 		if folder.ResourceKey != "" {
@@ -800,6 +801,7 @@ func (s *Server) listResponse(r *http.Request, p string, folder folderRef, list 
 	}
 	if list.NextPageToken != "" {
 		q := r.URL.Query()
+		q.Del("resourceKey")
 		if p == "" {
 			q.Set("folderId", folder.ID)
 		}
