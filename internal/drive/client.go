@@ -329,10 +329,11 @@ func (c *Client) GetFile(ctx context.Context, id, resourceKey string) (*File, er
 	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files/"+url.PathEscape(id)+"?"+values.Encode(), id, resourceKey, &out); err != nil {
 		return nil, err
 	}
-	annotateFileExports(&out)
-	if out.ID != "" {
-		c.files.put(cacheKey, out)
+	if out.ID == "" {
+		return nil, errors.New("decode Drive response: missing file ID")
 	}
+	annotateFileExports(&out)
+	c.files.put(cacheKey, out)
 	return &out, nil
 }
 
