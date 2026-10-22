@@ -257,7 +257,7 @@ func (c *Client) ResolveItemPath(ctx context.Context, p, rootFolderID, rootResou
 	if err != nil {
 		return nil, err
 	}
-	parts := strings.Split(strings.Trim(strings.TrimSpace(p), "/"), "/")
+	parts := strings.Split(strings.Trim(p, "/"), "/")
 	parent, parentResourceKey := rootFolderID, rootResourceKey
 	resolvedParent := ""
 	cleanParts := make([]string, 0, len(parts))
