@@ -134,3 +134,67 @@ func TestExportUsesFilesExportEndpoint(t *testing.T) {
 		t.Fatalf("body = %q", body)
 	}
 }
+
+func TestGoogleVidsHasNoImplicitExportFormat(t *testing.T) {
+	file := File{MIMEType: "application/vnd.google-apps.vid"}
+	if !IsWorkspaceFile(file) {
+		t.Fatal("Google Vids must retain Workspace classification")
+	}
+	if formats := SupportedExportFormats(file); len(formats) != 0 {
+		t.Fatalf("unsupported formats advertised: %+v", formats)
+	}
+	if format, ok := DefaultExportFormat(file); ok {
+		t.Fatalf("unsupported default advertised: %+v", format)
+	}
+	mp4, err := ExportFormatFor("mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if SupportsExportFormat(file, mp4) {
+		t.Fatal("Vids incorrectly accepts explicit MP4 export")
+	}
+}
+
+func TestExportDefaultsPreserveOtherTypesAndCustomLinks(t *testing.T) {
+	for _, tt := range []struct {
+		name, mimeType, format string
+		exportLinks            map[string]string
+	}{
+		{"Docs", documentMIME, "docx", nil},
+		{"Apps Script", appsScriptMIME, "json", nil},
+		{"custom MP4", "application/vnd.google-apps.custom", "mp4", map[string]string{"video/mp4": "https://example.invalid/custom"}},
+		{"blob MP4", "video/mp4", "", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			file := File{MIMEType: tt.mimeType, ExportLinks: tt.exportLinks}
+			format, ok := DefaultExportFormat(file)
+			if tt.format == "" {
+				if ok || IsWorkspaceFile(file) || len(SupportedExportFormats(file)) != 0 {
+					t.Fatal("ordinary MP4 became a Workspace export")
+				}
+				return
+			}
+			alias, err := ExportFormatFor(tt.format)
+			if err != nil || !ok || format != alias || !SupportsExportFormat(file, alias) {
+				t.Fatalf("default = %+v/%t, alias = %+v, error = %v", format, ok, alias, err)
+			}
+		})
+	}
+}
+
+func TestODSAliasMatchesDocumentedMetadata(t *testing.T) {
+	const mimeType = "application/vnd.oasis.opendocument.spreadsheet"
+	want := ExportFormat{Format: "ods", MIMEType: mimeType, Extension: "ods"}
+	format, err := ExportFormatFor("ods")
+	if err != nil || format != want {
+		t.Errorf("ODS alias = %+v, error = %v", format, err)
+	}
+	file := File{MIMEType: spreadsheetMIME, ExportLinks: map[string]string{mimeType: "https://example.invalid/ods"}}
+	annotateFileExports(&file)
+	if len(file.ExportFormats) != 1 || file.ExportFormats[0] != want || file.DefaultExport == nil || *file.DefaultExport != want {
+		t.Errorf("ODS metadata annotations: formats = %+v, default = %+v", file.ExportFormats, file.DefaultExport)
+	}
+	if !SupportsExportFormat(file, format) {
+		t.Error("ODS alias does not match documented export metadata")
+	}
+}
