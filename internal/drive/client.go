@@ -552,11 +552,13 @@ func (c *Client) accessToken(ctx context.Context, rejectedToken string) (string,
 	if refreshed.AccessToken == "" {
 		return "", errors.New("token refresh returned empty access token")
 	}
-	if refreshed.ExpiresIn <= 0 {
+	// Seconds can fit in int64 while overflowing the nanosecond duration.
+	expiresIn := time.Duration(refreshed.ExpiresIn) * time.Second
+	if refreshed.ExpiresIn <= 0 || int64(expiresIn/time.Second) != refreshed.ExpiresIn {
 		return "", errors.New("token refresh returned invalid expires_in")
 	}
 	c.token.AccessToken = refreshed.AccessToken
-	c.token.Expiry = time.Now().Add(time.Duration(refreshed.ExpiresIn) * time.Second)
+	c.token.Expiry = time.Now().Add(expiresIn)
 	return c.token.AccessToken, nil
 }
 
