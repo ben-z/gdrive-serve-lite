@@ -875,7 +875,7 @@ func resolveResponse(item *drive.ResolvedItem) ResolveResponse {
 }
 
 func writeFileHead(w http.ResponseWriter, r *http.Request, meta drive.File, name string) {
-	if writeNotModifiedHead(w, r, meta.ModifiedTime) {
+	if writeConditionalHead(w, r, meta.ModifiedTime) {
 		return
 	}
 	if meta.MIMEType != "" {
@@ -897,7 +897,7 @@ func writeFileHead(w http.ResponseWriter, r *http.Request, meta drive.File, name
 }
 
 func writeExportHead(w http.ResponseWriter, r *http.Request, file drive.File, format drive.ExportFormat, name string) {
-	if writeNotModifiedHead(w, r, file.ModifiedTime) {
+	if writeConditionalHead(w, r, file.ModifiedTime) {
 		return
 	}
 	w.Header().Set("Content-Type", format.MIMEType)
@@ -914,14 +914,20 @@ func supportsRangeHead(file drive.File) bool {
 	return file.Size != "" && !isWorkspaceReadable(file) && !file.IsFolder()
 }
 
-// writeNotModifiedHead writes a 304 when If-Modified-Since proves the Drive
-// metadata fresh; it always sets Last-Modified when the time is known.
-func writeNotModifiedHead(w http.ResponseWriter, r *http.Request, modifiedTime string) bool {
+// writeConditionalHead evaluates date preconditions in HTTP precedence order
+// and sets Last-Modified when the Drive modification time is known.
+func writeConditionalHead(w http.ResponseWriter, r *http.Request, modifiedTime string) bool {
 	modified, ok := driveModifiedHTTPTime(modifiedTime)
 	if !ok {
 		return false
 	}
 	w.Header().Set("Last-Modified", modified.Format(http.TimeFormat))
+	if raw := r.Header.Get("If-Unmodified-Since"); raw != "" && r.Header.Get("If-Match") == "" {
+		if since, err := http.ParseTime(raw); err == nil && modified.After(since) {
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return true
+		}
+	}
 	if r.Header.Get("If-None-Match") != "" {
 		return false
 	}
