@@ -35,6 +35,9 @@ func main() {
 	if (*httpUser == "") != (*httpPass == "") {
 		log.Fatal("--user and --pass must be set together")
 	}
+	if strings.Contains(*httpUser, ":") {
+		log.Fatal("--user must not contain a colon")
+	}
 	for _, option := range []struct {
 		name     string
 		duration time.Duration
