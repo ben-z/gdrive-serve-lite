@@ -79,6 +79,49 @@ func TestFolderListingsRejectInvalidPagination(t *testing.T) {
 	}
 }
 
+func TestMalformedQueriesStopBeforeDrive(t *testing.T) {
+	for _, prefix := range []string{"", "/gdrive"} {
+		for _, route := range []string{"/api/list", "/api/resolve", "/api/file", "/", "/browse/", "/file/id/name", "/export/id/name", "/path/name"} {
+			for _, query := range []string{"limit=%ZZ", "pageSize=1;limit=2", "folderId=%ZZ", "folderId=selected;ignored=1"} {
+				t.Run(prefix+route+"?"+query, func(t *testing.T) {
+					app := testServer(func(req *http.Request) (*http.Response, error) {
+						t.Fatalf("malformed query reached Drive: %s", req.URL)
+						return nil, nil
+					}, Options{BaseURL: prefix})
+					rec := httptest.NewRecorder()
+					app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, prefix+route+"?"+query, nil))
+					if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid URL query") {
+						t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestListingPreservesEscapedQueryValues(t *testing.T) {
+	for _, prefix := range []string{"", "/gdrive"} {
+		t.Run(prefix, func(t *testing.T) {
+			calls := 0
+			app := testServer(func(req *http.Request) (*http.Response, error) {
+				calls++
+				if req.URL.Query().Get("pageToken") != "opaque;%+/" || req.Header.Get("X-Goog-Drive-Resource-Keys") != "selected/key;%" {
+					t.Fatalf("query = %s, resource keys = %q", req.URL.RawQuery, req.Header.Get("X-Goog-Drive-Resource-Keys"))
+				}
+				if !strings.Contains(req.URL.Query().Get("q"), "'selected' in parents") {
+					t.Fatalf("folder query = %q", req.URL.Query().Get("q"))
+				}
+				return jsonResponse(http.StatusOK, `{"files":[]}`), nil
+			}, Options{BaseURL: prefix})
+			rec := httptest.NewRecorder()
+			app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, prefix+"/api/list?folderId=selected&resourceKey=key%3B%25&pageToken=opaque%3B%25%2B%2F&limit=1", nil))
+			if rec.Code != http.StatusOK || calls != 1 {
+				t.Fatalf("status = %d, calls = %d, body = %s", rec.Code, calls, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestAPIListDefaultsToRootFolderResourceKey(t *testing.T) {
 	app := testServer(func(req *http.Request) (*http.Response, error) {
 		if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "root-folder/root-key-1" {

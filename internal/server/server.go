@@ -121,9 +121,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /browse/", s.handleBrowse)
 	mux.HandleFunc("GET /browse", s.handleBrowse)
 	mux.HandleFunc("/", s.handleRoot)
-	var handler http.Handler = mux
+	var handler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := url.ParseQuery(r.URL.RawQuery); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid URL query"})
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 	if s.basePath != "" {
-		handler = basePathMiddleware(s.basePath, mux)
+		handler = basePathMiddleware(s.basePath, handler)
 	}
 	if s.auth != nil {
 		handler = s.authMiddleware(handler)
@@ -628,7 +634,7 @@ func escapedPath(r *http.Request) string {
 	return r.URL.EscapedPath()
 }
 
-func basePathMiddleware(basePath string, mux *http.ServeMux) http.Handler {
+func basePathMiddleware(basePath string, next http.Handler) http.Handler {
 	escapedBase := (&url.URL{Path: basePath}).EscapedPath()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != basePath && !strings.HasPrefix(r.URL.Path, basePath+"/") {
@@ -647,7 +653,7 @@ func basePathMiddleware(basePath string, mux *http.ServeMux) http.Handler {
 			stripped.URL.RawPath = "/" + stripRawPrefix(r.URL.EscapedPath(), basePath+"/")
 		}
 		_, hadContentType := w.Header()["Content-Type"]
-		mux.ServeHTTP(&basePathResponseWriter{
+		next.ServeHTTP(&basePathResponseWriter{
 			ResponseWriter:  w,
 			request:         r,
 			escapedBasePath: escapedBase,
