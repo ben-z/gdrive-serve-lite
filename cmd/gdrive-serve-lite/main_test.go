@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"net"
 	"net/http"
@@ -98,12 +99,17 @@ func TestSplitRemotePath(t *testing.T) {
 		{"gdrive-ro:", "gdrive-ro", ""},
 		{" gdrive-ro :", "gdrive-ro", ""},
 		{"gdrive-ro:/", "gdrive-ro", "/"},
+		{"gdrive-ro:////", "gdrive-ro", "/"},
 		{"gdrive-ro:folder", "gdrive-ro", "/folder"},
-		{"gdrive-ro:/folder//child/", "gdrive-ro", "/folder/child"},
+		{"gdrive-ro:/folder//child/", "gdrive-ro", "/folder//child/"},
 		{"gdrive-ro:/Videos/Clips", "gdrive-ro", "/Videos/Clips"},
 		{"gdrive-ro:Videos/Clips", "gdrive-ro", "/Videos/Clips"},
-		{" gdrive-ro :/Videos//Clips/", "gdrive-ro", "/Videos/Clips"},
-		{"gdrive-ro:/Videos//Clips/ ", "gdrive-ro", "/Videos/Clips/ "},
+		{" gdrive-ro :/Videos//Clips/", "gdrive-ro", "/Videos//Clips/"},
+		{"gdrive-ro:/Videos//Clips/ ", "gdrive-ro", "/Videos//Clips/ "},
+		{"gdrive-ro:.", "gdrive-ro", "/."},
+		{"gdrive-ro:/..", "gdrive-ro", "/.."},
+		{"gdrive-ro:/parent/./child", "gdrive-ro", "/parent/./child"},
+		{"gdrive-ro:parent/../child", "gdrive-ro", "/parent/../child"},
 		{"gdrive-ro: leading", "gdrive-ro", "/ leading"},
 		{"gdrive-ro:/ leading", "gdrive-ro", "/ leading"},
 		{"gdrive-ro:trailing ", "gdrive-ro", "/trailing "},
@@ -112,7 +118,7 @@ func TestSplitRemotePath(t *testing.T) {
 		{"gdrive-ro:/ padded ", "gdrive-ro", "/ padded "},
 		{"gdrive-ro:   ", "gdrive-ro", "/   "},
 		{"gdrive-ro:/   ", "gdrive-ro", "/   "},
-		{"gdrive-ro:/parent / child /", "gdrive-ro", "/parent / child "},
+		{"gdrive-ro:/parent / child /", "gdrive-ro", "/parent / child /"},
 	}
 	for _, tt := range tests {
 		remote, rootPath := splitRemotePath(tt.in)
@@ -176,14 +182,25 @@ func TestStartupRejectsInvalidOptions(t *testing.T) {
 func TestStartupResolvesLiteralRootPaths(t *testing.T) {
 	const reachedDrive = "literal root path reached Drive"
 	if expected := os.Getenv("GDSL_TEST_LITERAL_ROOT"); expected != "" {
+		segments := strings.Split(expected, "/")
+		next, parentID := 0, "root"
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			query := req.URL.Query().Get("q")
-			if !strings.Contains(query, "name = '"+expected+"'") {
-				http.Error(w, "unexpected name query: "+query, http.StatusBadRequest)
+			if next >= len(segments) || !strings.Contains(query, "name = '"+segments[next]+"'") || !strings.Contains(query, "'"+parentID+"' in parents") {
+				http.Error(w, "unexpected path lookup: "+query, http.StatusBadRequest)
 				return
 			}
-			// Stop startup after the real entry point has sent the correct lookup.
-			http.Error(w, reachedDrive, http.StatusTeapot)
+			name := segments[next]
+			next++
+			if next == len(segments) {
+				// Stop startup after the real entry point has sent every correct lookup.
+				http.Error(w, reachedDrive, http.StatusTeapot)
+				return
+			}
+			parentID += "-child"
+			if err := json.NewEncoder(w).Encode(map[string]any{"files": []map[string]string{{"id": parentID, "name": name, "mimeType": "application/vnd.google-apps.folder"}}}); err != nil {
+				t.Error(err)
+			}
 		}))
 		defer upstream.Close()
 		transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -211,7 +228,7 @@ func TestStartupResolvesLiteralRootPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"50% off", "literal%2Fname", "literal%252Fname", "question?and#fragment", "日本語", "name with spaces", " leading", "trailing ", " padded ", "   "} {
+	for _, name := range []string{"50% off", "literal%2Fname", "literal%252Fname", "question?and#fragment", "日本語", "name with spaces", " leading", "trailing ", " padded ", "   ", ".", "..", "parent/./child", "parent/../child", "parent/child"} {
 		for _, source := range []string{"absolute remote", "relative remote", "root path", "root path overrides remote"} {
 			t.Run(source+"/"+name, func(t *testing.T) {
 				// An invalid listen address also makes a skipped root lookup exit.
