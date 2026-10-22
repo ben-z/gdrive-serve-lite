@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,6 +94,44 @@ func TestLoadPrefersExplicitRemoteOverEnv(t *testing.T) {
 	assertFakeConfig(t, cfg)
 	if cfg.Source != "rclone-file:"+path {
 		t.Fatalf("Source = %q, want rclone file source", cfg.Source)
+	}
+}
+
+func TestLoadRcloneRootResourceKey(t *testing.T) {
+	t.Setenv("GDSL_ACCESS_TOKEN", "env-access")
+	t.Setenv("GDSL_ROOT_FOLDER_ID", "env-root")
+	t.Setenv("GDSL_DRIVE_ID", "env-drive")
+	t.Setenv("GDSL_ROOT_RESOURCE_KEY", "env-key")
+	t.Setenv("RCLONE_CONFIG_PASS", "fixture-password")
+	for _, tt := range []struct{ name, folderID, wantRoot string }{
+		{"folder root", "fixture-folder", "fixture-folder"},
+		{"shared drive root", "", "fixture-drive"},
+	} {
+		for _, encrypted := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/encrypted=%t", tt.name, encrypted), func(t *testing.T) {
+				data := "[fixture]\ntype = drive\nteam_drive = fixture-drive\nroot_folder_id = " + tt.folderID +
+					"\nresource_key = fixture-key\ntoken = {\"access_token\":\"fixture-access\"}\n"
+				suffix := ""
+				if encrypted {
+					data = encryptedRcloneFixture(t, []byte(data), "fixture-password")
+					suffix = ":encrypted"
+				}
+				path := writeFixture(t, "rclone.conf", data)
+				cfg, err := Load("fixture", path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := cfg.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				if cfg.EffectiveRootFolderID() != tt.wantRoot || cfg.RootResourceKey != "fixture-key" {
+					t.Fatalf("root = %q, key = %q; want root %q with its stored key", cfg.EffectiveRootFolderID(), cfg.RootResourceKey, tt.wantRoot)
+				}
+				if cfg.Token.AccessToken != "fixture-access" || cfg.Source != "rclone-file:"+path+suffix {
+					t.Fatalf("remote credentials/source = %q, %q; want selected file", cfg.Token.AccessToken, cfg.Source)
+				}
+			})
+		}
 	}
 }
 
