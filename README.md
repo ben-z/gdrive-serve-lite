@@ -153,6 +153,8 @@ http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4?resourceKey=RESOURCE_KEY
 
 If Drive interrupts a download or export, the server aborts the response so clients can detect the incomplete transfer.
 
+File and export URLs accept `name=...` as the optional filename when the path has no filename. Generated links use this form for dot-only names so browser path normalization preserves the file ID.
+
 File and export `HEAD` responses use known modification times to evaluate date preconditions. A stale `If-Unmodified-Since` returns `412 Precondition Failed` before checking `If-Modified-Since`. Requests containing `If-Match` skip the `If-Unmodified-Since` check. Metadata-based `HEAD` responses do not evaluate ETag preconditions, and export `GET` requests do not forward conditional request headers to Drive.
 
 If Drive returns a `resourceKey` or `shortcutDetails.targetResourceKey` in metadata, path-based reads, multi-segment path resolution, and generated browser links automatically pass it through on the upstream Drive request. ID-based endpoints accept `resourceKey=...` explicitly.
@@ -167,6 +169,8 @@ http://127.0.0.1:8765/export/GOOGLE_DOC_FILE_ID/name.pdf?format=pdf
 ```
 
 If no `format` or `mimeType` is provided, the server defaults to rclone-like export formats: Docs as `docx`, Sheets as `xlsx`, Slides as `pptx`, Drawings as `svg`, Apps Script as `json`, and Google Vids as `mp4`. Explicit export formats are checked against Drive metadata when available, then Drive export responses are passed through with Drive's status, body, `Content-Disposition`, cache headers, and other read headers. Drive exports do not support HTTP range reads, so `Range` requests are rejected locally for `/export/...`. Export `HEAD` responses use the source file's Drive `modifiedTime` for `Last-Modified` and `If-Modified-Since`.
+
+Generated export URLs retain the original name. The download filename uses the selected format's extension.
 
 You can also stream by path:
 
