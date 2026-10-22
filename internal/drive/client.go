@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -199,21 +201,36 @@ func (c *Client) ListChildren(ctx context.Context, opts ListOptions) (*FileList,
 		return &cached, nil
 	}
 
+	values := c.baseListValues()
+	values.Set("q", "trashed=false and "+quote(opts.FolderID)+" in parents"+typeFilter(opts.Type))
+	values.Set("pageToken", opts.PageToken)
+	if opts.OrderBy != "" {
+		values.Set("orderBy", opts.OrderBy)
+	}
+	list, err := c.listFiles(ctx, values, opts.FolderID, opts.ResourceKey, pageSize, limit)
+	if err != nil {
+		return nil, err
+	}
+	c.lists.put(cacheKey, *list)
+	return list, nil
+}
+
+// listFiles follows partial or empty Drive pages until the limit or the
+// end. Path lookups use the same pagination to establish name uniqueness.
+func (c *Client) listFiles(ctx context.Context, values url.Values, id, resourceKey string, pageSize, limit int) (*FileList, error) {
+	values.Set("fields", "nextPageToken,incompleteSearch,files("+fileFields+")")
 	var combined FileList
-	nextToken := opts.PageToken
 	seenTokens := map[string]struct{}{}
+	if token := values.Get("pageToken"); token != "" {
+		seenTokens[token] = struct{}{}
+	}
 	for pageRequests := 0; len(combined.Files) < limit; pageRequests++ {
 		if pageRequests >= 10000 {
 			return nil, errors.New("too many Drive list pages without reaching limit")
 		}
-		if nextToken != "" {
-			if _, seen := seenTokens[nextToken]; seen {
-				return nil, fmt.Errorf("Drive returned repeated page token %q", nextToken)
-			}
-			seenTokens[nextToken] = struct{}{}
-		}
-		page, err := c.listChildrenPage(ctx, opts, nextToken, min(pageSize, limit-len(combined.Files)))
-		if err != nil {
+		values.Set("pageSize", strconv.Itoa(min(pageSize, limit-len(combined.Files))))
+		var page FileList
+		if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), id, resourceKey, &page); err != nil {
 			return nil, err
 		}
 		combined.Files = append(combined.Files, page.Files...)
@@ -222,30 +239,14 @@ func (c *Client) ListChildren(ctx context.Context, opts ListOptions) (*FileList,
 		if page.NextPageToken == "" {
 			break
 		}
-		nextToken = page.NextPageToken
+		if _, seen := seenTokens[page.NextPageToken]; seen {
+			return nil, fmt.Errorf("Drive returned repeated page token %q", page.NextPageToken)
+		}
+		seenTokens[page.NextPageToken] = struct{}{}
+		values.Set("pageToken", page.NextPageToken)
 	}
-	c.lists.put(cacheKey, combined)
+	annotateListExports(&combined)
 	return &combined, nil
-}
-
-func (c *Client) listChildrenPage(ctx context.Context, opts ListOptions, pageToken string, pageSize int) (*FileList, error) {
-	values := c.baseListValues()
-	values.Set("q", "trashed=false and "+quote(opts.FolderID)+" in parents"+typeFilter(opts.Type))
-	values.Set("fields", "nextPageToken,incompleteSearch,files("+fileFields+")")
-	values.Set("pageSize", strconv.Itoa(pageSize))
-	if pageToken != "" {
-		values.Set("pageToken", pageToken)
-	}
-	if opts.OrderBy != "" {
-		values.Set("orderBy", opts.OrderBy)
-	}
-
-	var out FileList
-	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), opts.FolderID, opts.ResourceKey, &out); err != nil {
-		return nil, err
-	}
-	annotateListExports(&out)
-	return &out, nil
 }
 
 // ResolveItemPath resolves a slash-separated path of URL-escaped segments,
@@ -388,14 +389,14 @@ func (c *Client) findItemsByName(ctx context.Context, parentID, parentResourceKe
 	}
 	values := c.baseListValues()
 	values.Set("q", "trashed=false and "+quote(parentID)+" in parents and name = "+quote(name)+typeFilter(itemType))
-	values.Set("fields", "files("+fileFields+")")
-	values.Set("pageSize", "2")
-	var out FileList
-	if err := c.getJSON(ctx, "https://www.googleapis.com/drive/v3/files?"+values.Encode(), parentID, parentResourceKey, &out); err != nil {
+	out, err := c.listFiles(ctx, values, parentID, parentResourceKey, 2, 2)
+	if err != nil {
 		return nil, err
 	}
-	annotateListExports(&out)
 	files := filterResolvedItems(out.Files, itemType)
+	if out.IncompleteSearch && len(files) < 2 {
+		return nil, fmt.Errorf("Drive returned incomplete search for name %q under %q", name, parentID)
+	}
 	if len(files) == 1 {
 		c.lookups.put(cacheKey, files)
 	}
@@ -444,7 +445,10 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	}
 	if res.StatusCode >= 400 {
 		defer res.Body.Close()
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+		body, err := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+		if err != nil {
+			return nil, fmt.Errorf("read Drive error response: %w", err)
+		}
 		return nil, &APIError{
 			StatusCode: res.StatusCode,
 			Status:     res.Status,
@@ -455,7 +459,7 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 }
 
 func (c *Client) doRaw(req *http.Request) (*http.Response, error) {
-	token, err := c.accessToken(req.Context(), false)
+	token, err := c.accessToken(req.Context(), "")
 	if err != nil {
 		return nil, err
 	}
@@ -467,9 +471,8 @@ func (c *Client) doRaw(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	if res.StatusCode == http.StatusUnauthorized && c.canRefresh() {
-		io.Copy(io.Discard, res.Body)
 		res.Body.Close()
-		token, err = c.accessToken(req.Context(), true)
+		token, err = c.accessToken(req.Context(), token)
 		if err != nil {
 			return nil, err
 		}
@@ -489,11 +492,13 @@ func (c *Client) canRefresh() bool {
 	return c.token.RefreshToken != ""
 }
 
-func (c *Client) accessToken(ctx context.Context, force bool) (string, error) {
+func (c *Client) accessToken(ctx context.Context, rejectedToken string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if !force && c.token.AccessToken != "" && (c.token.Expiry.IsZero() || time.Until(c.token.Expiry) > time.Minute) {
+	// A concurrent request may already have replaced the rejected token.
+	if c.token.AccessToken != "" && c.token.AccessToken != rejectedToken &&
+		(c.token.Expiry.IsZero() || time.Until(c.token.Expiry) > time.Minute) {
 		return c.token.AccessToken, nil
 	}
 	if c.token.RefreshToken == "" {
@@ -522,7 +527,10 @@ func (c *Client) accessToken(ctx context.Context, force bool) (string, error) {
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+		body, err := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+		if err != nil {
+			return "", fmt.Errorf("read token refresh error response: %w", err)
+		}
 		return "", fmt.Errorf("refresh token failed: %s: %s", res.Status, strings.TrimSpace(string(body)))
 	}
 	var refreshed struct {
@@ -535,10 +543,11 @@ func (c *Client) accessToken(ctx context.Context, force bool) (string, error) {
 	if refreshed.AccessToken == "" {
 		return "", errors.New("token refresh returned empty access token")
 	}
-	c.token.AccessToken = refreshed.AccessToken
-	if refreshed.ExpiresIn > 0 {
-		c.token.Expiry = time.Now().Add(time.Duration(refreshed.ExpiresIn) * time.Second)
+	if refreshed.ExpiresIn <= 0 {
+		return "", errors.New("token refresh returned invalid expires_in")
 	}
+	c.token.AccessToken = refreshed.AccessToken
+	c.token.Expiry = time.Now().Add(time.Duration(refreshed.ExpiresIn) * time.Second)
 	return c.token.AccessToken, nil
 }
 
@@ -548,9 +557,10 @@ func (c *Client) accessToken(ctx context.Context, force bool) (string, error) {
 type ttlCache[T any] struct {
 	clone func(T) T
 
-	mu      sync.RWMutex
-	ttl     time.Duration
-	entries map[string]ttlEntry[T]
+	mu        sync.RWMutex
+	ttl       time.Duration
+	entries   map[string]ttlEntry[T]
+	nextSweep time.Time
 }
 
 type ttlEntry[T any] struct {
@@ -564,21 +574,13 @@ func newTTLCache[T any](ttl time.Duration, clone func(T) T) *ttlCache[T] {
 
 // get clones outside the lock so concurrent hits do not serialize on the
 // copy; entries are never mutated in place, only replaced by put.
-func (c *ttlCache[T]) get(key string) (value T, ok bool) {
+func (c *ttlCache[T]) get(key string) (T, bool) {
 	c.mu.RLock()
 	ttl := c.ttl
 	entry, ok := c.entries[key]
 	c.mu.RUnlock()
 	var zero T
-	if ttl <= 0 || !ok {
-		return zero, false
-	}
-	if time.Now().After(entry.expiresAt) {
-		c.mu.Lock()
-		if current, ok := c.entries[key]; ok && time.Now().After(current.expiresAt) {
-			delete(c.entries, key)
-		}
-		c.mu.Unlock()
+	if ttl <= 0 || !ok || time.Now().After(entry.expiresAt) {
 		return zero, false
 	}
 	return c.clone(entry.value), true
@@ -590,7 +592,18 @@ func (c *ttlCache[T]) put(key string, value T) {
 	if c.ttl <= 0 {
 		return
 	}
-	c.entries[key] = ttlEntry[T]{value: c.clone(value), expiresAt: time.Now().Add(c.ttl)}
+	now := time.Now()
+	// Sweep on writes once per TTL so one-time lookups do not retain
+	// expired values forever. No timer or background worker is needed.
+	if !now.Before(c.nextSweep) {
+		for key, entry := range c.entries {
+			if !now.Before(entry.expiresAt) {
+				delete(c.entries, key)
+			}
+		}
+		c.nextSweep = now.Add(c.ttl)
+	}
+	c.entries[key] = ttlEntry[T]{value: c.clone(value), expiresAt: now.Add(c.ttl)}
 }
 
 // reset sets a new TTL and drops every entry.
@@ -599,6 +612,7 @@ func (c *ttlCache[T]) reset(ttl time.Duration) {
 	defer c.mu.Unlock()
 	c.ttl = ttl
 	c.entries = map[string]ttlEntry[T]{}
+	c.nextSweep = time.Time{}
 }
 
 func cloneFileList(list FileList) FileList {
@@ -607,27 +621,16 @@ func cloneFileList(list FileList) FileList {
 }
 
 func cloneFiles(files []File) []File {
-	if len(files) == 0 {
-		return nil
-	}
-	cloned := make([]File, len(files))
-	for i := range files {
-		cloned[i] = cloneFile(files[i])
+	cloned := slices.Clone(files)
+	for i := range cloned {
+		cloned[i] = cloneFile(cloned[i])
 	}
 	return cloned
 }
 
 func cloneFile(file File) File {
-	if file.ExportLinks != nil {
-		links := make(map[string]string, len(file.ExportLinks))
-		for key, value := range file.ExportLinks {
-			links[key] = value
-		}
-		file.ExportLinks = links
-	}
-	if file.ExportFormats != nil {
-		file.ExportFormats = append([]ExportFormat(nil), file.ExportFormats...)
-	}
+	file.ExportLinks = maps.Clone(file.ExportLinks)
+	file.ExportFormats = slices.Clone(file.ExportFormats)
 	if file.DefaultExport != nil {
 		format := *file.DefaultExport
 		file.DefaultExport = &format

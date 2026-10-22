@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -301,19 +302,46 @@ func TestDownloadRefreshesAndRetriesUnauthorized(t *testing.T) {
 }
 
 func TestListChildrenRejectsRepeatedPageToken(t *testing.T) {
-	client := NewClient(testConfig(), &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			return jsonResponse(http.StatusOK, `{"files":[],"nextPageToken":"same-token"}`), nil
-		}),
-	})
+	for _, tc := range []struct {
+		name, pageToken string
+		limit           int
+		responses       []string
+	}{
+		{"empty pages", "", 2, []string{
+			`{"files":[],"nextPageToken":"same-token"}`,
+			`{"files":[],"nextPageToken":"same-token"}`,
+		}},
+		{"full page repeats request token", "same-token", 1, []string{
+			`{"files":[{"id":"a"}],"nextPageToken":"same-token"}`,
+		}},
+		{"full page cycles to earlier token", "first", 2, []string{
+			`{"files":[{"id":"a"}],"nextPageToken":"second"}`,
+			`{"files":[{"id":"b"}],"nextPageToken":"first"}`,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			client := NewClient(testConfig(), &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					if calls >= len(tc.responses) {
+						t.Fatal("requested another page after a repeated token")
+					}
+					response := tc.responses[calls]
+					calls++
+					return jsonResponse(http.StatusOK, response), nil
+				}),
+			})
 
-	_, err := client.ListChildren(context.Background(), ListOptions{
-		FolderID: "folder-1",
-		PageSize: 1,
-		Limit:    2,
-	})
-	if err == nil || !strings.Contains(err.Error(), "repeated page token") {
-		t.Fatalf("error = %v, want repeated page token error", err)
+			_, err := client.ListChildren(context.Background(), ListOptions{
+				FolderID:  "folder-1",
+				PageSize:  1,
+				Limit:     tc.limit,
+				PageToken: tc.pageToken,
+			})
+			if err == nil || !strings.Contains(err.Error(), "repeated page token") {
+				t.Fatalf("error = %v, want repeated page token error", err)
+			}
+		})
 	}
 }
 
@@ -776,3 +804,200 @@ func textResponse(status int, body string) *http.Response {
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }
+
+func TestResolveItemPathFollowsPartialPages(t *testing.T) {
+	for _, duplicate := range []bool{false, true} {
+		t.Run(fmt.Sprintf("duplicate=%t", duplicate), func(t *testing.T) {
+			var calls int
+			client := NewClient(testConfig(), &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					calls++
+					q := req.URL.Query()
+					if !strings.Contains(q.Get("fields"), "nextPageToken") {
+						t.Fatal("path lookup did not request pagination tokens")
+					}
+					if got := req.Header.Get("X-Goog-Drive-Resource-Keys"); got != "root-folder/root-key" {
+						t.Fatalf("resource keys = %q", got)
+					}
+					switch q.Get("pageToken") {
+					case "":
+						return jsonResponse(http.StatusOK, `{"files":[],"nextPageToken":"partial"}`), nil
+					case "partial":
+						return jsonResponse(http.StatusOK, `{"files":[{"id":"first","name":"clip.mp4","mimeType":"video/mp4"}],"nextPageToken":"last"}`), nil
+					case "last":
+						if q.Get("pageSize") != "1" {
+							t.Fatalf("last page size = %q, want 1", q.Get("pageSize"))
+						}
+						if duplicate {
+							return jsonResponse(http.StatusOK, `{"files":[{"id":"second","name":"clip.mp4","mimeType":"video/mp4"}]}`), nil
+						}
+						return jsonResponse(http.StatusOK, `{"files":[]}`), nil
+					default:
+						t.Fatalf("unexpected page token = %q", q.Get("pageToken"))
+						return nil, nil
+					}
+				}),
+			})
+			item, err := client.ResolveItemPath(context.Background(), "/clip.mp4", "root-folder", "root-key", "file")
+			if duplicate {
+				var ambiguous *AmbiguousPathError
+				if !errors.As(err, &ambiguous) || ambiguous.Count != 2 {
+					t.Fatalf("error = %v, want two ambiguous matches", err)
+				}
+			} else if err != nil || item.File.ID != "first" {
+				t.Fatalf("item = %+v, error = %v", item, err)
+			}
+			if calls != 3 {
+				t.Fatalf("calls = %d, want 3", calls)
+			}
+		})
+	}
+}
+
+func TestResolveItemPathRejectsUnreliableSearch(t *testing.T) {
+	for _, tc := range []struct {
+		name, response, want string
+	}{
+		{"repeated token", `{"files":[],"nextPageToken":"same"}`, "repeated page token"},
+		{"incomplete", `{"files":[{"id":"a","name":"clip.mp4","mimeType":"video/mp4"}],"incompleteSearch":true}`, "incomplete search"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := NewClient(testConfig(), &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					return jsonResponse(http.StatusOK, tc.response), nil
+				}),
+			})
+			_, err := client.ResolveItemPath(context.Background(), "/clip.mp4", "root-folder", "", "file")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %s", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestConcurrentUnauthorizedRequestsShareRefresh(t *testing.T) {
+	const requests = 8
+	var staleRequests, refreshes atomic.Int32
+	allStale := make(chan struct{})
+	cfg := testConfig()
+	cfg.Token.RefreshToken = "refresh-token"
+	client := NewClient(cfg, &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Host == "oauth2.googleapis.com" {
+				refreshes.Add(1)
+				return jsonResponse(http.StatusOK, `{"access_token":"fresh-token","expires_in":3600}`), nil
+			}
+			if req.Header.Get("Authorization") == "Bearer test-access" {
+				if staleRequests.Add(1) == requests {
+					close(allStale)
+				}
+				<-allStale
+				return textResponse(http.StatusUnauthorized, "expired"), nil
+			}
+			return textResponse(http.StatusOK, "media"), nil
+		}),
+	})
+	errors := make(chan error, requests)
+	for range requests {
+		go func() {
+			resp, err := client.Download(context.Background(), "clip", nil, "")
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					err = fmt.Errorf("status = %d", resp.StatusCode)
+				}
+			}
+			errors <- err
+		}()
+	}
+	for range requests {
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := refreshes.Load(); got != 1 {
+		t.Fatalf("refreshes = %d, want 1", got)
+	}
+}
+
+func TestTokenRefreshRejectsInvalidExpiry(t *testing.T) {
+	cfg := testConfig()
+	cfg.Token.AccessToken = ""
+	cfg.Token.RefreshToken = "refresh-token"
+	client := NewClient(cfg, &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"access_token":"fresh-token","expires_in":0}`), nil
+		}),
+	})
+	_, err := client.GetFile(context.Background(), "clip", "")
+	if err == nil || !strings.Contains(err.Error(), "invalid expires_in") {
+		t.Fatalf("error = %v, want invalid expires_in", err)
+	}
+	if client.token.AccessToken != "" {
+		t.Fatal("invalid refresh response replaced the access token")
+	}
+}
+
+func TestCacheWritesRemoveExpiredEntries(t *testing.T) {
+	cache := newTTLCache(time.Hour, func(value string) string { return value })
+	cache.entries["expired"] = ttlEntry[string]{value: "old", expiresAt: time.Now().Add(-time.Second)}
+	cache.put("fresh", "new")
+	if len(cache.entries) != 1 {
+		t.Fatalf("retained %d entries, want only the fresh entry", len(cache.entries))
+	}
+	if value, ok := cache.get("fresh"); !ok || value != "new" {
+		t.Fatalf("fresh cache lookup = %q, %t", value, ok)
+	}
+}
+
+func TestMetadataCacheClonesNestedValues(t *testing.T) {
+	client := NewClient(testConfig(), &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"id":"doc","name":"Notes","mimeType":"application/vnd.google-apps.document","exportLinks":{"application/pdf":"original"},"shortcutDetails":{"targetId":"original"}}`), nil
+		}),
+	})
+	first, err := client.GetFile(context.Background(), "doc", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.ExportLinks["application/pdf"] = "changed"
+	first.ExportFormats[0].Format = "changed"
+	first.DefaultExport.Format = "changed"
+	first.ShortcutDetails.TargetID = "changed"
+	second, err := client.GetFile(context.Background(), "doc", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ExportLinks["application/pdf"] != "original" || second.ExportFormats[0].Format != "pdf" ||
+		second.DefaultExport.Format != "pdf" || second.ShortcutDetails.TargetID != "original" {
+		t.Fatalf("cached metadata was mutated: %+v", second)
+	}
+}
+
+func TestUpstreamErrorBodyReadFailuresPropagate(t *testing.T) {
+	readErr := errors.New("truncated upstream response")
+	for _, refresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refresh=%t", refresh), func(t *testing.T) {
+			cfg := testConfig()
+			if refresh {
+				cfg.Token.AccessToken = ""
+				cfg.Token.RefreshToken = "refresh-token"
+			}
+			client := NewClient(cfg, &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					resp := textResponse(http.StatusServiceUnavailable, "")
+					resp.Body = io.NopCloser(failingReader{readErr})
+					return resp, nil
+				}),
+			})
+			_, err := client.GetFile(context.Background(), "clip", "")
+			if !errors.Is(err, readErr) {
+				t.Fatalf("error = %v, want upstream body read failure", err)
+			}
+		})
+	}
+}
+
+type failingReader struct{ err error }
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }

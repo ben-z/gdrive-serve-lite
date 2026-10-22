@@ -64,20 +64,27 @@ func resolveRcloneConfigPath(configPath string) (string, error) {
 	if configPath != "" {
 		return filepath.Abs(configPath)
 	}
-	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
-		path := filepath.Join(dir, "rclone", "rclone.conf")
-		if _, err := os.Stat(path); err == nil {
-			return path, nil
-		}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("find user config directory: %w", err)
 	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		legacy := filepath.Join(home, ".rclone.conf")
-		if _, err := os.Stat(legacy); err == nil {
-			return legacy, nil
-		}
-		return filepath.Join(home, ".config", "rclone", "rclone.conf"), nil
+	path := filepath.Join(dir, "rclone", "rclone.conf")
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect rclone config %s: %w", path, err)
 	}
-	return "", errors.New("could not determine rclone config path")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("find home directory: %w", err)
+	}
+	legacy := filepath.Join(home, ".rclone.conf")
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect rclone config %s: %w", legacy, err)
+	}
+	return filepath.Join(home, ".config", "rclone", "rclone.conf"), nil
 }
 
 func configFromRcloneEntry(remote string, entry map[string]string) (Config, error) {

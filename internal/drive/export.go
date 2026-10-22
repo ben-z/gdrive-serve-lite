@@ -54,15 +54,6 @@ var exportFormatsByName = map[string]ExportFormat{
 	"mp4":  {Format: "mp4", MIMEType: "video/mp4", Extension: "mp4"},
 }
 
-var defaultSourceExport = map[string]string{
-	documentMIME:     "docx",
-	spreadsheetMIME:  "xlsx",
-	presentationMIME: "pptx",
-	drawingMIME:      "svg",
-	appsScriptMIME:   "json",
-	googleVidsMIME:   "mp4",
-}
-
 var sourceExportFormats = map[string][]string{
 	documentMIME:     {"docx", "pdf", "odt", "rtf", "txt", "html", "epub", "md"},
 	spreadsheetMIME:  {"xlsx", "pdf", "ods", "csv", "tsv", "html"},
@@ -103,8 +94,8 @@ func DefaultExportFormat(file File) (ExportFormat, bool) {
 	if !IsWorkspaceFile(file) {
 		return ExportFormat{}, false
 	}
-	if key, ok := defaultSourceExport[file.MIMEType]; ok {
-		format := exportFormatsByName[key]
+	if keys := sourceExportFormats[file.MIMEType]; len(keys) > 0 {
+		format := exportFormatsByName[keys[0]]
 		if len(file.ExportLinks) == 0 || file.ExportLinks[format.MIMEType] != "" {
 			return format, true
 		}

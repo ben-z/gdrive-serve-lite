@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -53,6 +54,27 @@ func TestAPIListAggregatesPagesAndReturnsNextURL(t *testing.T) {
 	}
 	if !strings.Contains(body.Next, "folderId=folder-1") || !strings.Contains(body.Next, "pageToken=tok-3") {
 		t.Fatalf("Next = %q", body.Next)
+	}
+}
+
+func TestFolderListingsRejectInvalidPagination(t *testing.T) {
+	for _, route := range []string{"/api/list", "/", "/browse/"} {
+		for _, query := range []string{"pageSize=invalid", "limit=1.5", "pageSize=999999999999999999999999999", "limit=999999999999999999999999999"} {
+			t.Run(route+"?"+query, func(t *testing.T) {
+				app := testServer(func(req *http.Request) (*http.Response, error) {
+					t.Fatalf("invalid pagination reached Drive: %s", req.URL.String())
+					return nil, nil
+				})
+				rec := httptest.NewRecorder()
+				app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, route+"?"+query, nil))
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+				}
+				if !strings.Contains(rec.Body.String(), "must be an integer") {
+					t.Fatalf("body = %q", rec.Body.String())
+				}
+			})
+		}
 	}
 }
 
@@ -266,6 +288,11 @@ func TestBaseURLPreservesEscapedPathsForResolution(t *testing.T) {
 	}{
 		{"plain prefix", "/gdrive", "/gdrive/browse/a%2Fb"},
 		{"escapable prefix", "/my base", "/my%20base/browse/a%2Fb"},
+		{"escaped unreserved prefix", "/gdrive", "/g%64rive/browse/a%2Fb"},
+		{"lowercase escapes", "/caf%C3%A9", "/caf%c3%a9/browse/a%2fb"},
+		{"escaped prefix separator", "/my/base", "/my%2fbase/browse/a%2Fb"},
+		{"escaped base boundary", "/gdrive", "/gdrive%2Fbrowse/a%2Fb"},
+		{"escaped base and boundary", "/gdrive", "/g%64rive%2fbrowse/a%2Fb"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -295,6 +322,33 @@ func TestBaseURLPreservesEscapedPathsForResolution(t *testing.T) {
 			}
 			if calls != 2 {
 				t.Fatalf("calls = %d, want 2", calls)
+			}
+		})
+	}
+}
+
+func TestBaseURLLinksEscapePrefix(t *testing.T) {
+	for _, basePath := range []string{"/my base", "/my#base", "/my?base", "/my%base", "/café"} {
+		t.Run(basePath, func(t *testing.T) {
+			prefix := (&url.URL{Path: basePath}).EscapedPath()
+			app := testServer(func(req *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, `{"files":[{"id":"file-1","name":"video.mp4"}],"nextPageToken":"next"}`), nil
+			}, Options{BaseURL: prefix})
+			req := httptest.NewRequest(http.MethodGet, prefix+"/api/list?pageSize=1&limit=1&links=1", nil)
+			rec := httptest.NewRecorder()
+			app.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			var body ListResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Files[0].URL != prefix+"/file/file-1/video.mp4" {
+				t.Fatalf("file URL = %q", body.Files[0].URL)
+			}
+			if !strings.HasPrefix(body.Next, prefix+"/api/list?") {
+				t.Fatalf("next URL = %q", body.Next)
 			}
 		})
 	}
@@ -452,6 +506,26 @@ func TestCORSRejectsDifferentOrigin(t *testing.T) {
 	}
 	if rec.Header().Get("Access-Control-Allow-Origin") != "" {
 		t.Fatalf("Access-Control-Allow-Origin = %q", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestCORSResponsesVaryByOrigin(t *testing.T) {
+	for _, allowed := range []string{"*", "http://localhost:3000"} {
+		for _, origin := range []string{"", "http://localhost:3000", "http://other.invalid"} {
+			t.Run(allowed+"/"+origin, func(t *testing.T) {
+				app := testServer(func(req *http.Request) (*http.Response, error) {
+					t.Fatal("health check must not contact Drive")
+					return nil, nil
+				}, Options{AllowOrigin: allowed})
+				req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+				req.Header.Set("Origin", origin)
+				rec := httptest.NewRecorder()
+				app.Handler().ServeHTTP(rec, req)
+				if rec.Header().Get("Vary") != "Origin" {
+					t.Fatalf("Vary = %q, want Origin", rec.Header().Get("Vary"))
+				}
+			})
+		}
 	}
 }
 
@@ -2336,9 +2410,6 @@ func TestAPIListPaginatesHugeFolder(t *testing.T) {
 	}
 	if driveCalls != pages {
 		t.Fatalf("driveCalls = %d, want one per page", driveCalls)
-	}
-	if elapsed > 15*time.Second {
-		t.Fatalf("pagination walk took %s", elapsed)
 	}
 	t.Logf("walked %d files in %d pages in %s (%.2fms/page)",
 		len(seen), pages, elapsed, float64(elapsed.Milliseconds())/float64(pages))

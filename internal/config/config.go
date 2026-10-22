@@ -1,12 +1,9 @@
 package config
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"time"
 )
 
@@ -28,27 +25,14 @@ type Config struct {
 
 // Load reads auth config from the named rclone remote, or from GDSL_* env
 // vars when no remote is given.
-func Load(ctx context.Context, remote, configPath string) (Config, error) {
-	if remote == "" {
-		if cfg, ok := loadEnv(); ok {
-			return cfg, nil
-		}
-		return Config{}, errors.New("no auth config found: set GDSL_* env vars or pass --remote")
+func Load(remote, configPath string) (Config, error) {
+	if remote != "" {
+		return loadRcloneFile(remote, configPath, os.Getenv("RCLONE_CONFIG_PASS"))
 	}
-
-	cfg, err := loadRcloneFile(remote, configPath, os.Getenv("RCLONE_CONFIG_PASS"))
-	if err == nil {
-		return cfg, nil
+	if configPath != "" {
+		return Config{}, errors.New("--config requires --remote")
 	}
-	if errors.Is(err, errConfigFileEncrypted) || errors.Is(err, errConfigFileDecrypt) {
-		return Config{}, err
-	}
-
-	dumpCfg, dumpErr := loadRcloneDump(ctx, remote)
-	if dumpErr != nil {
-		return Config{}, fmt.Errorf("load rclone config file: %v; rclone config dump fallback: %w", err, dumpErr)
-	}
-	return dumpCfg, nil
+	return loadEnv()
 }
 
 func (c Config) Validate() error {
@@ -71,17 +55,19 @@ func (c Config) EffectiveRootFolderID() string {
 	return "root"
 }
 
-func loadEnv() (Config, bool) {
+func loadEnv() (Config, error) {
 	clientID := os.Getenv("GDSL_CLIENT_ID")
 	accessToken := os.Getenv("GDSL_ACCESS_TOKEN")
 	refreshToken := os.Getenv("GDSL_REFRESH_TOKEN")
 	if clientID == "" && accessToken == "" && refreshToken == "" {
-		return Config{}, false
+		return Config{}, errors.New("no auth config found: set GDSL_* env vars or pass --remote")
 	}
 	expiry := time.Time{}
 	if raw := os.Getenv("GDSL_TOKEN_EXPIRY"); raw != "" {
-		if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
-			expiry = t
+		var err error
+		expiry, err = time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse GDSL_TOKEN_EXPIRY: %w", err)
 		}
 	}
 	return Config{
@@ -96,22 +82,5 @@ func loadEnv() (Config, bool) {
 		RootFolderID:    os.Getenv("GDSL_ROOT_FOLDER_ID"),
 		RootResourceKey: os.Getenv("GDSL_ROOT_RESOURCE_KEY"),
 		Source:          "env",
-	}, true
-}
-
-func loadRcloneDump(ctx context.Context, remote string) (Config, error) {
-	out, err := exec.CommandContext(ctx, "rclone", "config", "dump").Output()
-	if err != nil {
-		return Config{}, fmt.Errorf("rclone config dump: %w; if the config is encrypted, set RCLONE_CONFIG_PASS or use GDSL_* env vars", err)
-	}
-
-	var dump map[string]map[string]string
-	if err := json.Unmarshal(out, &dump); err != nil {
-		return Config{}, fmt.Errorf("parse rclone config dump: %w", err)
-	}
-	entry, ok := dump[remote]
-	if !ok {
-		return Config{}, fmt.Errorf("rclone remote %q not found", remote)
-	}
-	return configFromRcloneEntry(remote, entry)
+	}, nil
 }
