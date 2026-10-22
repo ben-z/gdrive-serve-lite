@@ -138,6 +138,7 @@ func TestStartupRejectsInvalidOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const argumentSecret = "SYNTHETIC_IGNORED_PASSWORD"
 	for _, tt := range []struct {
 		name string
 		args []string
@@ -151,6 +152,11 @@ func TestStartupRejectsInvalidOptions(t *testing.T) {
 		{"partial auth", []string{"--user=ben"}, "--user and --pass must be set together"},
 		{"colon in username", []string{"--user=fixture:user", "--pass=fixture-pass"}, "--user must not contain a colon"},
 		{"colon in password", []string{"--user=fixture-user", "--pass=fixture:pass"}, "no auth config found"},
+		{"stray before auth", []string{"unexpected", "--user=fixture-user", "--pass=" + argumentSecret}, "unexpected positional arguments"},
+		{"terminator before auth", []string{"--", "--user=fixture-user", "--pass=" + argumentSecret}, "unexpected positional arguments"},
+		{"trailing positional", []string{"--user=fixture-user", "--pass=fixture-pass", argumentSecret}, "unexpected positional arguments"},
+		{"normal auth flags", []string{"--user=fixture-user", "--pass=fixture-pass"}, "no auth config found"},
+		{"trailing terminator", []string{"--user=fixture-user", "--pass=fixture-pass", "--"}, "no auth config found"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			args := append([]string{"-test.run=^TestStartupRejectsInvalidOptions$", "--"}, tt.args...)
@@ -159,6 +165,9 @@ func TestStartupRejectsInvalidOptions(t *testing.T) {
 			output, err := command.CombinedOutput()
 			if err == nil || !strings.Contains(string(output), tt.want) {
 				t.Fatalf("startup error = %v, output = %s; want %q", err, output, tt.want)
+			}
+			if strings.Contains(string(output), argumentSecret) {
+				t.Fatal("startup diagnostic exposed an argument value")
 			}
 		})
 	}
