@@ -34,24 +34,28 @@ func main() {
 	if (*httpUser == "") != (*httpPass == "") {
 		log.Fatal("--user and --pass must be set together")
 	}
+	for _, option := range []struct {
+		name     string
+		duration time.Duration
+	}{
+		{"metadata-cache-ttl", *metadataCacheTTL},
+		{"list-cache-ttl", *listCacheTTL},
+		{"drive-response-header-timeout", *driveResponseHeaderTimeout},
+	} {
+		if option.duration < 0 {
+			log.Fatalf("--%s must be non-negative; use 0 to disable", option.name)
+		}
+	}
 	remoteName, remoteRootPath := splitRemotePath(*remote)
+	if *remote != "" && remoteName == "" {
+		log.Fatal("--remote requires a remote name before the colon")
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	cfg, err := config.Load(ctx, remoteName, *configPath)
+	cfg, err := config.Load(remoteName, *configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-	if *rootFolderID != "" {
-		cfg.RootFolderID = *rootFolderID
-	}
-	if *rootResourceKey != "" {
-		cfg.RootResourceKey = *rootResourceKey
-	}
-	if *driveID != "" {
-		cfg.DriveID = *driveID
-	}
+	cfg = applyRootOverrides(cfg, *rootFolderID, *driveID, *rootResourceKey)
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid config: %v", err)
 	}
@@ -62,7 +66,9 @@ func main() {
 
 	rootID, rootKey := cfg.EffectiveRootFolderID(), cfg.RootResourceKey
 	if p := cmp.Or(*rootPath, remoteRootPath); *rootFolderID == "" && p != "" && p != "/" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		item, err := client.ResolveItemPath(ctx, p, rootID, rootKey, "folder")
+		cancel()
 		if err != nil {
 			log.Fatalf("resolve root path %q: %v", p, err)
 		}
@@ -87,6 +93,24 @@ func main() {
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func applyRootOverrides(cfg config.Config, folderID, driveID, resourceKey string) config.Config {
+	previousRoot := cfg.EffectiveRootFolderID()
+	if folderID != "" {
+		cfg.RootFolderID = folderID
+	}
+	if driveID != "" {
+		cfg.DriveID = driveID
+	}
+	// A resource key belongs to its folder ID, including an implicit drive root.
+	if cfg.EffectiveRootFolderID() != previousRoot {
+		cfg.RootResourceKey = ""
+	}
+	if resourceKey != "" {
+		cfg.RootResourceKey = resourceKey
+	}
+	return cfg
 }
 
 // splitRemotePath splits an rclone-style "remote:path" into the remote name

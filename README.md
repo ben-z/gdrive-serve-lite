@@ -28,9 +28,9 @@ go build ./cmd/gdrive-serve-lite
 ./gdrive-serve-lite --remote drive-ro:/Videos --addr 127.0.0.1:8765
 ```
 
-The `--config` flag is optional. If omitted, the server checks `RCLONE_CONFIG`, then the usual rclone config locations. When `--remote` is provided, that explicit rclone remote is used even if `GDSL_*` environment variables are also present. Environment auth is used when no remote is requested.
+The `--config` flag is optional and requires `--remote`. If omitted, the server checks `RCLONE_CONFIG`, then the usual rclone config locations. A selected config file must be readable and valid; errors stop startup. When `--remote` is provided, that explicit rclone remote is used even if `GDSL_*` environment variables are also present. Environment auth is used when no remote is requested.
 
-The `--remote` flag accepts either a Google Drive remote name or the familiar rclone `remote:path` form. Non-Drive rclone remotes are rejected at startup. The path portion is resolved once at startup and used as the served root. You can also pass `--root-path /path/from/drive/root`; `--root-folder-id` is the fastest and most precise root selector when you already know the Drive folder ID. Use `--root-resource-key` with `--root-folder-id` for a link-shared root folder that requires a Drive resource key.
+The `--remote` flag accepts either a Google Drive remote name or the familiar rclone `remote:path` form. Non-Drive rclone remotes are rejected at startup. The path portion is resolved once at startup and used as the served root. You can also pass `--root-path /path/from/drive/root`; `--root-folder-id` is the fastest and most precise root selector when you already know the Drive folder ID. Use `--root-resource-key` with `--root-folder-id` for a link-shared root folder that requires a Drive resource key. Changing the root folder or implicit shared-drive root clears its inherited resource key; supply the new root's key explicitly.
 
 Use `--drive-id` to target a shared drive. It scopes listing and search to that drive and, when no explicit root is given, serves the drive's root. It overrides the remote's `team_drive` setting and the `GDSL_DRIVE_ID` environment variable.
 
@@ -45,6 +45,8 @@ The server decrypts rclone's `RCLONE_ENCRYPT_V0` config format directly. It only
 The `--metadata-cache-ttl` flag controls a small positive lookup cache for file metadata and path segment resolution. The default is `5m`, which keeps repeated `/path/...`, `/export/...`, and `HEAD` requests fast.
 
 The `--list-cache-ttl` flag controls an exact-query cache for successful directory/list responses. The default is `30s`. The cache key includes folder ID, page token, type, order, page size, and limit, so different pages and filters do not collide. Set either cache TTL to `0` to disable it.
+
+Expired cache entries are pruned during subsequent writes. Cache TTLs and the response-header timeout must be non-negative; `0` disables the corresponding setting.
 
 The `--drive-response-header-timeout` flag bounds how long the server waits for Google API response headers. The default is `30s`; it does not cap the duration of a long media response body after Drive starts sending it.
 
@@ -67,6 +69,8 @@ export GDSL_ROOT_RESOURCE_KEY='...' # optional link-shared root resource key
 ./gdrive-serve-lite --addr 127.0.0.1:8765
 ```
 
+For an existing access token, set `GDSL_ACCESS_TOKEN` and optionally `GDSL_TOKEN_EXPIRY` to its RFC 3339 expiry. An invalid expiry stops startup. Refresh tokens require `GDSL_CLIENT_ID`; access tokens alone are also supported. Access tokens with a known expiry must still be valid unless a refresh token is configured.
+
 ## API
 
 List a folder by ID:
@@ -88,6 +92,8 @@ curl 'http://127.0.0.1:8765/api/list?type=files&pageSize=1000&limit=1000'
 ```
 
 `pageSize` is the requested Drive page size. `limit` is the maximum number of entries to return to the caller. If Drive returns a short partial page, the server follows `nextPageToken` until it has `limit` entries or reaches the end. Responses include `nextPageToken` and a ready-to-call `next` URL when more entries are available. Pass `links=1` to include a per-entry server `url` for the low-latency read/export route, or the folder browse route. Folder shortcuts are treated as folders for `type=folders` and excluded from `type=files`.
+
+`pageSize` and `limit` must be integers when provided. Malformed values return HTTP 400. Path resolution also follows partial Drive pages and requires a complete search to establish a unique match; duplicate names return HTTP 409.
 
 Resolve a folder path:
 
@@ -130,6 +136,8 @@ curl 'http://127.0.0.1:8765/?format=json&type=files&pageSize=1000&limit=1000'
 curl -H 'Accept: application/json' 'http://127.0.0.1:8765/Videos/Clips?type=files&pageSize=1000&limit=1000'
 ```
 
+JSON media ranges in `Accept` must have a positive quality value to select JSON. Malformed media ranges or quality values return HTTP 400; explicit JSON query options take precedence.
+
 `HEAD` on folder paths and `/browse/...` resolves the folder and returns the listing content type without fetching a Drive page.
 
 Download or stream a file:
@@ -140,6 +148,8 @@ http://127.0.0.1:8765/file/DRIVE_FILE_ID/name.mp4?resourceKey=RESOURCE_KEY
 ```
 
 `GET /file/...` forwards directly to Drive `alt=media` and preserves `Range` plus standard conditional read headers such as `If-None-Match`, `If-Modified-Since`, and `If-Range`, so media seeking and cache validation are single upstream Drive requests. Media read status codes and headers, including `Content-Disposition`, cache headers, checksum headers such as `X-Goog-Hash`, and range errors like `416` with `Content-Range`, are passed through. `HEAD /file/...` uses one metadata request and returns length/type/modified-time headers without streaming file bytes. Blob `HEAD` responses advertise `Accept-Ranges: bytes` and honor `If-Modified-Since` with `304 Not Modified` when Drive metadata proves the file is fresh.
+
+If Drive interrupts a download or export, the server aborts the response so clients can detect the incomplete transfer.
 
 If Drive returns a `resourceKey` or `shortcutDetails.targetResourceKey` in metadata, path-based reads, multi-segment path resolution, and generated browser links automatically pass it through on the upstream Drive request. ID-based endpoints accept `resourceKey=...` explicitly.
 
@@ -170,3 +180,14 @@ Plain root-relative paths are the rclone-like compatibility route: folders rende
 - duplicate names make path resolution ambiguous; use `folderId` or file ID directly when that happens
 - root-relative paths under reserved prefixes such as `/api`, `/file`, `/path`, `/export`, `/browse`, and `/healthz` are treated as server endpoints
 - rclone config password input is environment-only for now; no interactive prompt
+
+## Development
+
+```sh
+go test -race -count=1 ./...
+go vet ./...
+go build ./...
+GOTOOLCHAIN="$(go env GOVERSION)" go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+```
+
+GitHub Actions runs these checks on Linux and macOS, verifies module checksums, and checks Go formatting. The Go version is selected from `go.mod`.

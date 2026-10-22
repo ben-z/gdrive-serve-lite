@@ -114,6 +114,54 @@ func TestEncryptedRcloneFileAcceptsNFKCEquivalentPassword(t *testing.T) {
 	assertFakeConfig(t, cfg)
 }
 
+func TestConfigDiscoveryRejectsBrokenCandidate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("AppData", filepath.Join(home, "config"))
+	t.Setenv("RCLONE_CONFIG", "")
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A non-directory config parent is an error, not an absent candidate.
+	if err := os.WriteFile(filepath.Join(dir, "rclone"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".rclone.conf"), []byte(fakePlainRcloneConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Load("fake-drive", "")
+	if err == nil || !strings.Contains(err.Error(), "inspect rclone config") {
+		t.Fatalf("Load() error = %v, want broken preferred config", err)
+	}
+}
+
+func TestConfigDiscoveryUsesLegacyFileWhenPreferredMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("AppData", filepath.Join(home, "config"))
+	t.Setenv("RCLONE_CONFIG", "")
+	path := filepath.Join(home, ".rclone.conf")
+	if err := os.WriteFile(path, []byte(fakePlainRcloneConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load("fake-drive", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFakeConfig(t, cfg)
+	if cfg.Source != "rclone-file:"+path {
+		t.Fatalf("Source = %q, want legacy file", cfg.Source)
+	}
+}
+
 func writeFixture(t *testing.T, name, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
