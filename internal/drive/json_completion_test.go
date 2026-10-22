@@ -43,13 +43,14 @@ func TestJSONResponsesRequireCompleteBodies(t *testing.T) {
 						return
 					}
 					defer conn.Close()
+					fmt.Fprint(rw, "HTTP/1.1 200 OK\r\nConnection: close\r\n")
 					switch variant {
 					case "truncated content length":
-						fmt.Fprintf(rw, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s", len(prefix)+1, prefix)
+						fmt.Fprintf(rw, "Content-Length: %d\r\n\r\n%s", len(prefix)+1, prefix)
 					case "unfinished chunks":
-						fmt.Fprintf(rw, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n", len(prefix), prefix)
+						fmt.Fprintf(rw, "Transfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n", len(prefix), prefix)
 					case "malformed trailers":
-						fmt.Fprintf(rw, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n%s\r\n\r\n", len(prefix), prefix, canary)
+						fmt.Fprintf(rw, "Transfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n%s\r\n\r\n", len(prefix), prefix, canary)
 					default:
 						body := prefix + " \r\n\t"
 						if variant == "trailing garbage" {
@@ -57,7 +58,7 @@ func TestJSONResponsesRequireCompleteBodies(t *testing.T) {
 						} else if variant == "second value" {
 							body = prefix + `{"secret":"` + canary + `"}`
 						}
-						fmt.Fprintf(rw, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
+						fmt.Fprintf(rw, "Content-Length: %d\r\n\r\n%s", len(body), body)
 					}
 					if err := rw.Flush(); err != nil {
 						t.Error(err)
