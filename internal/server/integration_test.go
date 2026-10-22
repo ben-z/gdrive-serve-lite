@@ -278,8 +278,11 @@ func getJSON(t *testing.T, url string) (*http.Response, ListResponse) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := io.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
 	res.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var lr ListResponse
 	if strings.Contains(res.Header.Get("Content-Type"), "json") {
 		if err := json.Unmarshal(body, &lr); err != nil {
@@ -357,8 +360,11 @@ func TestIntegrationResolveBrowseAndTypeFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rr ResolveResponse
-	body, _ := io.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
 	res.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := json.Unmarshal(body, &rr); err != nil {
 		t.Fatal(err)
 	}
@@ -383,8 +389,11 @@ func TestIntegrationResolveBrowseAndTypeFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	html, _ := io.ReadAll(res.Body)
+	html, err := io.ReadAll(res.Body)
 	res.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(res.Header.Get("Content-Type"), "text/html") {
 		t.Fatalf("browse Content-Type = %q", res.Header.Get("Content-Type"))
 	}
@@ -401,8 +410,11 @@ func TestIntegrationBlobRangeDownloadAndConditional(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := io.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
 	res.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if res.StatusCode != http.StatusOK || string(body) != "hello drive\n" {
 		t.Fatalf("download status=%d body=%q", res.StatusCode, body)
 	}
@@ -417,8 +429,11 @@ func TestIntegrationBlobRangeDownloadAndConditional(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ = io.ReadAll(res.Body)
+	body, err = io.ReadAll(res.Body)
 	res.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if res.StatusCode != http.StatusPartialContent || string(body) != "hello" {
 		t.Fatalf("range status=%d body=%q", res.StatusCode, body)
 	}
@@ -466,8 +481,11 @@ func TestIntegrationExportAndFormats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := io.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
 	res.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(body), `"defaultExport"`) ||
 		!strings.Contains(string(body), `"docx"`) ||
 		!strings.Contains(string(body), `"pdf"`) {
@@ -479,9 +497,12 @@ func TestIntegrationExportAndFormats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ = io.ReadAll(res.Body)
+	body, err = io.ReadAll(res.Body)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || !strings.HasPrefix(string(body), "%PDF") {
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusOK || string(body) != "%PDF-1.4 exported doc-notes" {
 		t.Fatalf("export status=%d body=%q", res.StatusCode, body[:min(len(body), 40)])
 	}
 
