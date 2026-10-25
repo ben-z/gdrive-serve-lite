@@ -25,9 +25,8 @@ const (
 	DefaultListCacheTTL     = 30 * time.Second
 )
 
-// fileFields is the Drive metadata field set requested by every read in this
-// package, so all routes see the same file shape.
-const fileFields = "id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,exportLinks,shortcutDetails"
+// File metadata and listing queries request the same public file shape.
+const fileFields = "id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink,webContentLink,resourceKey,exportLinks,shortcutDetails,hasThumbnail,thumbnailVersion"
 
 var ErrNotFound = errors.New("not found")
 
@@ -60,20 +59,23 @@ func (e *APIError) Error() string {
 }
 
 type File struct {
-	ID              string            `json:"id"`
-	Name            string            `json:"name"`
-	MIMEType        string            `json:"mimeType"`
-	Size            string            `json:"size,omitempty"`
-	ModifiedTime    string            `json:"modifiedTime,omitempty"`
-	MD5Checksum     string            `json:"md5Checksum,omitempty"`
-	WebViewLink     string            `json:"webViewLink,omitempty"`
-	WebContentLink  string            `json:"webContentLink,omitempty"`
-	ResourceKey     string            `json:"resourceKey,omitempty"`
-	ExportLinks     map[string]string `json:"exportLinks,omitempty"`
-	ExportFormats   []ExportFormat    `json:"exportFormats,omitempty"`
-	DefaultExport   *ExportFormat     `json:"defaultExport,omitempty"`
-	ShortcutDetails *ShortcutDetails  `json:"shortcutDetails,omitempty"`
-	URL             string            `json:"url,omitempty"`
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	MIMEType         string            `json:"mimeType"`
+	Size             string            `json:"size,omitempty"`
+	ModifiedTime     string            `json:"modifiedTime,omitempty"`
+	MD5Checksum      string            `json:"md5Checksum,omitempty"`
+	HasThumbnail     bool              `json:"hasThumbnail"`
+	ThumbnailVersion string            `json:"thumbnailVersion,omitempty"`
+	ThumbnailURL     string            `json:"thumbnailUrl,omitempty"`
+	WebViewLink      string            `json:"webViewLink,omitempty"`
+	WebContentLink   string            `json:"webContentLink,omitempty"`
+	ResourceKey      string            `json:"resourceKey,omitempty"`
+	ExportLinks      map[string]string `json:"exportLinks,omitempty"`
+	ExportFormats    []ExportFormat    `json:"exportFormats,omitempty"`
+	DefaultExport    *ExportFormat     `json:"defaultExport,omitempty"`
+	ShortcutDetails  *ShortcutDetails  `json:"shortcutDetails,omitempty"`
+	URL              string            `json:"url,omitempty"`
 }
 
 type ShortcutDetails struct {
@@ -480,6 +482,10 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 }
 
 func (c *Client) doRaw(req *http.Request) (*http.Response, error) {
+	return c.doRawWithClient(req, c.httpClient)
+}
+
+func (c *Client) doRawWithClient(req *http.Request, client *http.Client) (*http.Response, error) {
 	token, err := c.accessToken(req.Context(), "")
 	if err != nil {
 		return nil, err
@@ -487,7 +493,7 @@ func (c *Client) doRaw(req *http.Request) (*http.Response, error) {
 	authed := req.Clone(req.Context())
 	authed.Header.Set("Authorization", "Bearer "+token)
 
-	res, err := c.httpClient.Do(authed)
+	res, err := client.Do(authed)
 	if err != nil {
 		return nil, err
 	}
@@ -499,7 +505,7 @@ func (c *Client) doRaw(req *http.Request) (*http.Response, error) {
 		}
 		authed = req.Clone(req.Context())
 		authed.Header.Set("Authorization", "Bearer "+token)
-		res, err = c.httpClient.Do(authed)
+		res, err = client.Do(authed)
 		if err != nil {
 			return nil, err
 		}

@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -120,6 +122,7 @@ func (s *Server) Handler() http.Handler {
 	// empty-bodied 405 these routes have always returned.
 	mux.HandleFunc("GET /export/", s.handleExport)
 	mux.HandleFunc("GET /file/", s.handleFile)
+	mux.HandleFunc("GET /thumbnail/", s.handleThumbnail)
 	mux.HandleFunc("GET /path/", s.handlePathFile)
 	mux.HandleFunc("GET /browse/", s.handleBrowse)
 	mux.HandleFunc("GET /browse", s.handleBrowse)
@@ -221,7 +224,11 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, resolveResponse(item))
+	response := resolveResponse(item)
+	if includeEntryURLs(r) {
+		response.File = s.linkFile(response.File)
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
@@ -273,7 +280,35 @@ func (s *Server) handleFileMetadata(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if includeEntryURLs(r) {
+		linked := s.linkFile(*file)
+		file = &linked
+	}
 	writeJSON(w, http.StatusOK, file)
+}
+
+func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	id, _, ok, err := idAndNameFromEscapedPath(r, "/thumbnail/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		badRequest(w, "invalid file ID")
+		return
+	}
+	image, err := s.drive.GetThumbnail(r.Context(), id, r.URL.Query().Get("resourceKey"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", image.MIMEType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", fileContentSecurityPolicy)
+	w.Header().Set("Cache-Control", "private, no-cache")
+	w.Header().Set("ETag", fmt.Sprintf(`"%x"`, sha256.Sum256(image.Body)))
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(image.Body))
 }
 
 func (s *Server) handleExportFormats(w http.ResponseWriter, r *http.Request) {
@@ -849,10 +884,18 @@ func (s *Server) listFiles(files []drive.File, includeURLs bool) []drive.File {
 	}
 	withURLs := make([]drive.File, len(files))
 	for i, file := range files {
-		withURLs[i] = file
-		withURLs[i].URL = s.entryURL(file)
+		withURLs[i] = s.linkFile(file)
 	}
 	return withURLs
+}
+
+func (s *Server) linkFile(file drive.File) drive.File {
+	file.URL = s.entryURL(file)
+	if file.HasThumbnail {
+		id, resourceKey := file.TargetIDAndKey()
+		file.ThumbnailURL = withResourceKey(s.link("/thumbnail/"+url.PathEscape(id)), resourceKey)
+	}
+	return file
 }
 
 func (s *Server) entryURL(file drive.File) string {

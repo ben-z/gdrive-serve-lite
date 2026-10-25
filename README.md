@@ -122,6 +122,33 @@ curl 'http://127.0.0.1:8765/api/file?id=DRIVE_FILE_ID'
 curl 'http://127.0.0.1:8765/api/file?id=DRIVE_FILE_ID&resourceKey=RESOURCE_KEY'
 ```
 
+File metadata includes the provider's `hasThumbnail` boolean and, when available,
+the opaque `thumbnailVersion` for identifying preview revisions. Use that version
+for preview cache invalidation separately from the original file's content
+metadata. `links=1` on list, file-metadata, and resolve requests adds
+`thumbnailUrl` when `hasThumbnail` is true. This is a sidecar-relative read
+URL, including the configured base path and resource key; it is not a guarantee
+that the current credentials can read the preview.
+
+```sh
+curl 'http://127.0.0.1:8765/api/file?id=DRIVE_FILE_ID&links=1'
+curl 'http://127.0.0.1:8765/thumbnail/DRIVE_FILE_ID?resourceKey=RESOURCE_KEY'
+```
+
+`GET /thumbnail/ID` retrieves Drive's native preview. Only this read requests the
+short-lived private Google link. The sidecar does not cache private links or image
+bytes and does not expose them in metadata. It accepts HTTPS links on
+`lh3.googleusercontent.com`, refuses redirects in both metadata and image reads,
+and sends no caller cookies or authorization headers to Google. Its own Drive
+OAuth credentials stay within the sidecar.
+
+The complete image must be JPEG, PNG, GIF, or WebP with a matching content signature
+and at most 2 MiB before any image response is sent. `HEAD` performs the same
+bounded validation but returns no image body. Successful reads are private and
+revalidated using an image-content ETag; errors are not cached. An unavailable
+private link returns 404, and provider permission failures retain their HTTP
+status with sanitized errors.
+
 Fetch supported export formats for a Google Workspace file:
 
 ```sh
